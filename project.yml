@@ -29,6 +29,7 @@ targets:
     platform: macOS
     sources:
       - Apps/Shared
+      - Apps/SharedCore
       - path: Apps/macOS
         excludes: ["*.plist", "*.entitlements"]
     dependencies:
@@ -70,6 +71,7 @@ targets:
     platform: iOS
     sources:
       - Apps/Shared
+      - Apps/SharedCore
       - path: Apps/iOS
         excludes: ["*.plist", "*.entitlements"]
     dependencies:
@@ -79,6 +81,7 @@ targets:
         product: WorkspaceRemote
       - package: WorkspaceKit
         product: WorkspaceUI
+      - target: Workspace-Widgets
     info:
       path: Apps/iOS/Info.plist
       properties:
@@ -89,6 +92,10 @@ targets:
         NSRemindersFullAccessUsageDescription: Workspace can import your Apple Reminders as tasks.
         NSRemindersUsageDescription: Workspace can import your Apple Reminders as tasks.
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        SharedKeychainGroup: $(AppIdentifierPrefix)com.rescalante.workspace
+        CFBundleURLTypes:
+          - CFBundleURLName: com.rescalante.workspace
+            CFBundleURLSchemes: [workspace]
         SupabaseHost: $(SUPABASE_HOST)
         SupabaseAnonKey: $(SUPABASE_ANON_KEY)
         GoogleClientID: $(GOOGLE_CLIENT_ID)
@@ -96,8 +103,46 @@ targets:
       path: Apps/iOS/Workspace.entitlements
       properties:
         com.apple.developer.applesignin: [Default]
+        # Shared with the widgets and Siri: the local database lives in this group.
+        com.apple.security.application-groups: [group.com.rescalante.workspace]
+        keychain-access-groups: ["$(AppIdentifierPrefix)com.rescalante.workspace"]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.rescalante.workspace
         PRODUCT_NAME: Workspace
         TARGETED_DEVICE_FAMILY: "1"
+
+  Workspace-Widgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Apps/Widgets
+        excludes: ["*.plist", "*.entitlements"]
+      - Apps/SharedCore
+    dependencies:
+      - package: WorkspaceKit
+        product: WorkspaceKit
+      - package: WorkspaceKit
+        product: WorkspaceUI
+      - package: WorkspaceKit
+        product: WorkspaceRemote
+    info:
+      path: Apps/Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: Workspace
+        SupabaseHost: $(SUPABASE_HOST)
+        SupabaseAnonKey: $(SUPABASE_ANON_KEY)
+        SharedKeychainGroup: $(AppIdentifierPrefix)com.rescalante.workspace
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: Apps/Widgets/Widgets.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.rescalante.workspace]
+        keychain-access-groups: ["$(AppIdentifierPrefix)com.rescalante.workspace"]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rescalante.workspace.widgets
+        PRODUCT_NAME: WorkspaceWidgets
+        TARGETED_DEVICE_FAMILY: "1"
+        SKIP_INSTALL: YES

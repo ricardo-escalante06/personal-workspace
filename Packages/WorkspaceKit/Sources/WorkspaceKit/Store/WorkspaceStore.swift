@@ -44,6 +44,9 @@ public final class WorkspaceStore: Sendable {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         var config = Configuration()
         config.busyMode = .timeout(5)
+        // The iPhone app and its widgets share this file: let iOS suspend the
+        // database when the app goes to the background instead of killing it.
+        config.observesSuspensionNotifications = true
         return try WorkspaceStore(db: DatabasePool(path: url.path, configuration: config))
     }
 

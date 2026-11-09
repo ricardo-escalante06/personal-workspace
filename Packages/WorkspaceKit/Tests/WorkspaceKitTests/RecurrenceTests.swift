@@ -131,4 +131,12 @@ import Testing
         #expect(p.parse("Review every other week").repeatRule == RepeatRule(.weekly, interval: 2))
         #expect(p.parse("Every one counts").repeatRule == nil)
     }
+
+    @Test func dueFillerWordIsDropped() {
+        let p = QuickAddParser(containers: [], categories: [], today: d("2026-11-09"))
+        let r = p.parse("hw18 due 8pm")
+        #expect(r.title == "hw18" && r.dueTime == LocalTime(hour: 20, minute: 0) && r.dueDate == d("2026-11-09"))
+        #expect(p.parse("Essay due fri").title == "Essay")
+        #expect(p.parse("Pay what is due").title == "Pay what is due")
+    }
 }

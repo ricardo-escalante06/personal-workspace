@@ -73,7 +73,9 @@ struct TimeGridView: View {
                     }
                     .frame(height: Self.hourHeight * 24)
                 }
-                .onAppear { proxy.scrollTo("hour-7", anchor: .top) }
+                // Open with the current time in the middle of the screen.
+                .onAppear { scrollToNow(proxy) }
+                .onChange(of: days) { _, new in if new.contains(today) { scrollToNow(proxy) } }
             }
             .onHover { isHovering = $0 }
             #if os(macOS)
@@ -207,6 +209,11 @@ struct TimeGridView: View {
         .overlay(alignment: .topTrailing) { nowPill }
     }
 
+    private func scrollToNow(_ proxy: ScrollViewProxy) {
+        let hour = Calendar.current.component(.hour, from: Date())
+        DispatchQueue.main.async { proxy.scrollTo("hour-\(hour)", anchor: .center) }
+    }
+
     private func hourLabel(_ hour: Int) -> String {
         let h = hour % 12 == 0 ? 12 : hour % 12
         return "\(h) \(hour < 12 ? "AM" : "PM")"
@@ -333,7 +340,7 @@ struct TimeGridView: View {
         .overlay(alignment: .bottom) {
             if p.item.isEditable && !p.item.isDeadline {
                 Color.clear
-                    .frame(height: 6)
+                    .frame(height: Platform.deviceName == "iPhone" ? 14 : 6)
                     .contentShape(Rectangle())
                     .gesture(resizeGesture(p))
                     #if os(macOS)
@@ -369,23 +376,42 @@ struct TimeGridView: View {
     }
 
     private func moveGesture(_ p: PlacedItem, columnWidth: CGFloat) -> some Gesture {
+        #if os(iOS)
+        // On a touch screen a plain drag scrolls; press and hold a block, then drag it.
+        LongPressGesture(minimumDuration: 0.3)
+            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named("grid")))
+            .onChanged { value in
+                guard case .second(true, let v) = value else { return }
+                if drag == nil { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+                let group: Set<String> = selection.contains(p.item.id) ? selection : [p.item.id]
+                drag = DragPreview(itemId: p.item.id, dx: v?.translation.width ?? 0, dy: v?.translation.height ?? 0,
+                                   resizeOnly: false, group: group)
+            }
+            .onEnded { value in
+                guard case .second(true, let v?) = value else { drag = nil; return }
+                finishMove(p, translation: v.translation, columnWidth: columnWidth)
+            }
+        #else
         DragGesture(minimumDistance: 4, coordinateSpace: .named("grid"))
             .onChanged { v in
                 let group: Set<String> = selection.contains(p.item.id) ? selection : [p.item.id]
                 drag = DragPreview(itemId: p.item.id, dx: v.translation.width, dy: v.translation.height,
                                    resizeOnly: false, group: group)
             }
-            .onEnded { v in
-                drag = nil
-                let dayShift = Int(snapDays(v.translation.width, columnWidth))
-                let delta = snap(v.translation.height)
-                guard dayShift != 0 || delta != 0 else { return }
-                var calendar = Calendar.current
-                calendar.timeZone = tz
-                let start = calendar.date(byAdding: .day, value: dayShift, to: p.item.start)!.addingTimeInterval(delta)
-                let end = calendar.date(byAdding: .day, value: dayShift, to: p.item.end)!.addingTimeInterval(delta)
-                onMove(p.item, start, end, false)
-            }
+            .onEnded { v in finishMove(p, translation: v.translation, columnWidth: columnWidth) }
+        #endif
+    }
+
+    private func finishMove(_ p: PlacedItem, translation: CGSize, columnWidth: CGFloat) {
+        drag = nil
+        let dayShift = Int(snapDays(translation.width, columnWidth))
+        let delta = snap(translation.height)
+        guard dayShift != 0 || delta != 0 else { return }
+        var calendar = Calendar.current
+        calendar.timeZone = tz
+        let start = calendar.date(byAdding: .day, value: dayShift, to: p.item.start)!.addingTimeInterval(delta)
+        let end = calendar.date(byAdding: .day, value: dayShift, to: p.item.end)!.addingTimeInterval(delta)
+        onMove(p.item, start, end, false)
     }
 
     private func resizeGesture(_ p: PlacedItem) -> some Gesture {
@@ -402,6 +428,17 @@ struct TimeGridView: View {
     }
 
     private func createGesture(columnWidth: CGFloat) -> some Gesture {
+        #if os(iOS)
+        // Tap an empty slot for a one-hour block there (dragging is for scrolling).
+        SpatialTapGesture(coordinateSpace: .named("grid"))
+            .onEnded { v in
+                if !selection.isEmpty { selection = []; return }
+                let dayIndex = min(max(Int(v.location.x / columnWidth), 0), days.count - 1)
+                let step = Self.hourHeight * CGFloat(Self.snapMinutes / 60)
+                let top = max(0, (v.location.y / step).rounded(.down) * step)
+                pendingCreate = Ghost(day: dayIndex, y0: top, y1: min(top + Self.hourHeight, Self.hourHeight * 24))
+            }
+        #else
         DragGesture(minimumDistance: 0, coordinateSpace: .named("grid"))
             .onChanged { v in
                 let day = min(max(Int(v.startLocation.x / columnWidth), 0), days.count - 1)
@@ -421,6 +458,7 @@ struct TimeGridView: View {
                 if bottom - top < Self.hourHeight / 4 { bottom = top + Self.hourHeight }
                 pendingCreate = Ghost(day: dayIndex, y0: top, y1: bottom)
             }
+        #endif
     }
 
     private func times(for g: Ghost) -> (Date, Date) {

@@ -120,6 +120,14 @@ public struct QuickAddParser: Sendable {
                 result.tokens.append(Token(kind: .container, text: word, label: c.name))
                 keep[i] = false; i += 1; continue
             }
+            // "due fri", "by 8pm", "on nov 13": the filler word goes with the date/time.
+            if ["due", "by", "on"].contains(lower), i + 1 < words.count {
+                let rest = words.map { $0.lowercased() }
+                if (result.dueDate == nil && parseDate(at: i + 1, rest) != nil)
+                    || (result.dueTime == nil && parseTime(rest[i + 1]) != nil) {
+                    keep[i] = false; i += 1; continue
+                }
+            }
             // Repeats: "every …", "daily", "weekly"…
             if result.repeatRule == nil, let (rule, used) = parseRepeat(at: i, words.map { $0.lowercased() }) {
                 result.repeatRule = rule

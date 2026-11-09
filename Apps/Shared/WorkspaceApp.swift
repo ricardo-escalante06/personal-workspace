@@ -9,7 +9,13 @@ struct WorkspaceApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            Group {
+                #if os(iOS)
+                PhoneRootView()
+                #else
+                RootView()
+                #endif
+            }
                 .environment(model)
                 .preferredColorScheme(.dark)
         }

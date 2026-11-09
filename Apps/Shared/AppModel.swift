@@ -128,7 +128,7 @@ final class AppModel {
 
     init() {
         do {
-            store = try WorkspaceStore.onDisk(at: AppPaths.databaseURL)
+            store = try SharedStore.open()
         } catch {
             fatalError("Could not open the local database: \(error)")
         }
@@ -152,6 +152,10 @@ final class AppModel {
         try? store.pruneOrphanedRecords()
         convertImportedRepeats()
         observe()
+        NotificationScheduler.shared.start(model: self)
+        #if os(iOS)
+        watchCalendarForWidget()
+        #endif
         Task { await restoreSession() }
     }
 
@@ -226,6 +230,8 @@ final class AppModel {
         containers = list
         tree = ContainerTree.build(list)
         taskHolders = containersInSidebarOrder.filter { $0.kind.holdsTasks }
+        // Siri learns list names ("add a task to CS61A in Workspace").
+        WorkspaceShortcuts.updateAppShortcutParameters()
     }
 
     // MARK: Auth
@@ -325,6 +331,13 @@ final class AppModel {
     /// Call when the app/window comes to the foreground.
     func appBecameActive() {
         calendarSource.refresh()
+        // The widgets and Siri write to the same file from other processes; tell this
+        // process's screens to re-read.
+        try? store.db.write { db in
+            try db.notifyChanges(in: Table("tasks"))
+            try db.notifyChanges(in: Table("task_occurrence_overrides"))
+            try db.notifyChanges(in: Table("sync_outbox"))
+        }
         Task { await scheduler?.request(.appActive) }
     }
 
@@ -1022,7 +1035,7 @@ final class AppModel {
     func goToThisWeek() {
         let today = LocalDate(Date())
         if selection == .calendar {
-            calendarAnchor = calendarMode == .week ? Dashboard.weekStart(containing: today) : today
+            calendarAnchor = calendarMode == .week && CalendarMode.weekLength == 7 ? Dashboard.weekStart(containing: today) : today
         } else {
             weekStart = Dashboard.weekStart(containing: today)
         }
@@ -1032,7 +1045,7 @@ final class AppModel {
     func stepCalendar(_ direction: Int) {
         switch calendarMode {
         case .day: calendarAnchor = calendarAnchor.adding(days: direction)
-        case .week: calendarAnchor = calendarAnchor.adding(days: 7 * direction)
+        case .week: calendarAnchor = calendarAnchor.adding(days: CalendarMode.weekLength * direction)
         case .month:
             var c = Calendar(identifier: .gregorian)
             c.timeZone = TimeZone(identifier: "UTC")!
@@ -1088,6 +1101,9 @@ enum SidebarItem: Hashable {
 enum CalendarMode: String, CaseIterable, Identifiable {
     case day = "Day", week = "Week", month = "Month"
     var id: String { rawValue }
+    /// On iPhone "Week" is three days, so the columns stay readable.
+    static var weekLength: Int { Platform.deviceName == "iPhone" ? 3 : 7 }
+    var title: String { self == .week && Self.weekLength == 3 ? "3 Days" : rawValue }
 }
 
 typealias ContainerColorName = String
@@ -1118,9 +1134,3 @@ struct Toast: Identifiable {
     var undo: () -> Void
 }
 
-enum AppPaths {
-    static var databaseURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("PersonalWorkspace/workspace.sqlite")
-    }
-}

@@ -8,17 +8,27 @@ struct SettingsView: View {
         TabView {
             AccountsSettings()
                 .tabItem { Label("Accounts", systemImage: "person.crop.circle") }
+            Form { NotificationSettingsSection() }
+                .formStyle(.grouped)
+                .tabItem { Label("Alerts", systemImage: "bell") }
         }
         .frame(width: 520, height: 380)
     }
 }
 
-private struct AccountsSettings: View {
+struct AccountsSettings: View {
+    var body: some View {
+        Form { CalendarAccountsSections() }
+        .formStyle(.grouped)
+    }
+}
+
+/// Google accounts and system calendar access (Mac Settings, iPhone Settings tab).
+struct CalendarAccountsSections: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         let source = model.calendarSource
-        Form {
             Section("Google Calendar") {
                 if let google = source.google {
                     if google.accounts.isEmpty {
@@ -54,7 +64,7 @@ private struct AccountsSettings: View {
                         .foregroundStyle(WSColor.textSecondary)
                 }
             }
-            Section("Other calendars on this Mac") {
+            Section("Other calendars on this \(Platform.deviceName)") {
                 switch source.access {
                 case .granted:
                     Text("iCloud and other accounts from System Settings › Internet Accounts are shown. Google accounts connected above replace their Mac copies.")
@@ -63,10 +73,8 @@ private struct AccountsSettings: View {
                     Text("Access is off. Turn it on in System Settings › Privacy & Security › Calendars.")
                         .foregroundStyle(WSColor.textSecondary)
                 default:
-                    Button("Allow Access to Mac Calendars") { Task { await source.requestAccess() } }
+                    Button("Allow Calendar Access") { Task { await source.requestAccess() } }
                 }
             }
-        }
-        .formStyle(.grouped)
     }
 }

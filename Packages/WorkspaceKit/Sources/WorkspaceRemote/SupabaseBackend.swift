@@ -6,10 +6,13 @@ import WorkspaceKit
 public struct BackendConfig: Sendable, Equatable {
     public var url: URL
     public var anonKey: String
+    /// Keychain group for the session, so app extensions (widgets) share the sign-in.
+    public var keychainAccessGroup: String?
 
-    public init(url: URL, anonKey: String) {
+    public init(url: URL, anonKey: String, keychainAccessGroup: String? = nil) {
         self.url = url
         self.anonKey = anonKey
+        self.keychainAccessGroup = keychainAccessGroup
     }
 
     /// nil when the app was built without Supabase credentials (local-only mode).
@@ -22,7 +25,10 @@ public struct BackendConfig: Sendable, Equatable {
             !host.isEmpty, !key.isEmpty, !host.hasPrefix("$("),
             let url = URL(string: host.hasPrefix("http") ? host : "https://\(host)")
         else { return nil }
-        return BackendConfig(url: url, anonKey: key)
+        // Set on iPhone only: the Mac keeps its existing (default) keychain location.
+        let group = (bundle.object(forInfoDictionaryKey: "SharedKeychainGroup") as? String)
+            .flatMap { $0.isEmpty || $0.hasPrefix("$(") ? nil : $0 }
+        return BackendConfig(url: url, anonKey: key, keychainAccessGroup: group)
     }
 }
 
@@ -34,7 +40,9 @@ public final class SupabaseBackend: Sendable {
         client = SupabaseClient(
             supabaseURL: config.url,
             supabaseKey: config.anonKey,
-            options: SupabaseClientOptions(auth: .init(emitLocalSessionAsInitialSession: true))
+            options: SupabaseClientOptions(auth: config.keychainAccessGroup.map {
+                .init(storage: KeychainLocalStorage(accessGroup: $0), emitLocalSessionAsInitialSession: true)
+            } ?? .init(emitLocalSessionAsInitialSession: true))
         )
     }
 

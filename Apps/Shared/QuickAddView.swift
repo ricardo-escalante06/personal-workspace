@@ -34,14 +34,25 @@ struct QuickAddView: View {
             HStack(spacing: WSSpace.s) {
                 Image(systemName: "plus.circle")
                     .foregroundStyle(WSColor.textTertiary)
-                TextField("New task — try “HW 5 cs61b fri 11:59pm #hw”", text: $text)
+                TextField(Platform.deviceName == "iPhone" ? "New task — “HW 5 cs61b fri #hw”" : "New task — try “HW 5 cs61b fri 11:59pm #hw”",
+                          text: $text)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16))
                     .focused($focused)
+                    .submitLabel(.done)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.sentences)
+                    #endif
                     .onSubmit(submit)
+                #if os(iOS)
+                Button("Add", action: submit)
+                    .fontWeight(.semibold)
+                    .disabled(result.title.trimmingCharacters(in: .whitespaces).isEmpty)
+                #endif
             }
 
-            HStack(spacing: WSSpace.xs) {
+            ChipFlow {
                 TokenChip(symbol: "tray", text: destinationLabel(result), color: destinationColor(result))
                 if let date = result.dueDate {
                     TokenChip(symbol: "flag", text: WSFormat.relativeDay(date, today: LocalDate(Date()))
@@ -61,16 +72,24 @@ struct QuickAddView: View {
                 if let p = result.priority {
                     TokenChip(symbol: "exclamationmark", text: "P\(p)")
                 }
-                Spacer()
-                Text("↩ to add · esc to cancel")
-                    .font(.system(size: 11))
-                    .foregroundStyle(WSColor.textTertiary)
             }
+            #if os(macOS)
+            Text("↩ to add · esc to cancel")
+                .font(.system(size: 11))
+                .foregroundStyle(WSColor.textTertiary)
+            #endif
         }
         .padding(WSSpace.l)
+        #if os(macOS)
         .frame(width: 560)
+        #else
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.top, WSSpace.s)
+        #endif
         .background(WSColor.raised)
         .onAppear { focused = true }
+        // iPhone sheets take a moment before a field can take focus.
+        .task { try? await Task.sleep(for: .milliseconds(350)); focused = true }
         .onEscape { dismiss() }
     }
 
@@ -182,6 +201,8 @@ struct CommandPalette: View {
         .frame(width: 560)
         .background(WSColor.raised)
         .onAppear { focused = true }
+        // iPhone sheets take a moment before a field can take focus.
+        .task { try? await Task.sleep(for: .milliseconds(350)); focused = true }
         .onEscape { dismiss() }
         .onKeyPress(.downArrow) { highlighted = min(highlighted + 1, max(items.count - 1, 0)); return .handled }
         .onKeyPress(.upArrow) { highlighted = max(highlighted - 1, 0); return .handled }
@@ -227,5 +248,34 @@ struct CommandPalette: View {
             model.openDetails(t.id)
         }
         dismiss()
+    }
+}
+
+/// Chips that wrap onto more lines when they don't fit.
+private struct ChipFlow: Layout {
+    var spacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, maxX: CGFloat = 0
+        for v in subviews {
+            let size = v.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width { x = 0; y += rowHeight + spacing; rowHeight = 0 }
+            x += size.width + spacing
+            maxX = max(maxX, x - spacing)
+            rowHeight = max(rowHeight, size.height)
+        }
+        return CGSize(width: min(maxX, width), height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
+        for v in subviews {
+            let size = v.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX { x = bounds.minX; y += rowHeight + spacing; rowHeight = 0 }
+            v.place(at: CGPoint(x: x, y: y), proposal: .unspecified)
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
     }
 }

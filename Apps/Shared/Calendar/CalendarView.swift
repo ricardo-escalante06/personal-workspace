@@ -29,7 +29,7 @@ struct CalendarView: View {
         case .day:
             return [model.calendarAnchor]
         case .week:
-            return (0..<7).map { model.calendarAnchor.adding(days: $0) }
+            return (0..<CalendarMode.weekLength).map { model.calendarAnchor.adding(days: $0) }
         case .month:
             let first = LocalDate(year: model.calendarAnchor.year, month: model.calendarAnchor.month, day: 1)
             let gridStart = Dashboard.weekStart(containing: first)
@@ -79,6 +79,14 @@ struct CalendarView: View {
             }
         }
         .background(WSColor.canvas)
+        #if os(iOS)
+        .overlay(alignment: .bottomTrailing) {
+            FloatingAddButton {
+                let start = Calendar.current.nextDate(after: Date(), matching: DateComponents(minute: 0), matchingPolicy: .nextTime) ?? Date()
+                createRequest = CalendarCreateRequest(start: start, end: start.addingTimeInterval(3600))
+            }
+        }
+        #endif
         .task(id: LoadKey(days: days, scope: model.calendarScope, revision: source.revision,
                           hidden: source.effectiveHiddenCalendarIds, access: source.access,
                           overrides: model.eventOverrides)) {
@@ -104,7 +112,7 @@ struct CalendarView: View {
         .focused($focused)
         .onAppear {
             focused = true
-            if model.calendarMode == .week, model.calendarAnchor == LocalDate(Date()) {
+            if model.calendarMode == .week, CalendarMode.weekLength == 7, model.calendarAnchor == LocalDate(Date()) {
                 model.calendarAnchor = Dashboard.weekStart(containing: model.calendarAnchor)
             }
         }
@@ -184,11 +192,36 @@ struct CalendarView: View {
     private var title: String {
         switch model.calendarMode {
         case .day: return model.calendarAnchor.startOfDay(in: tz).formatted(.dateTime.weekday(.wide).month(.wide).day().year())
-        case .week: return WSFormat.monthYear(days[3])
+        case .week: return WSFormat.monthYear(days[days.count / 2])
         case .month: return WSFormat.monthYear(model.calendarAnchor)
         }
     }
 
+    #if os(iOS)
+    /// iPhone: title and arrows on one line, view picker and filter below.
+    private var header: some View {
+        VStack(alignment: .leading, spacing: WSSpace.s) {
+            HStack(spacing: WSSpace.m) {
+                Text(title)
+                    .font(.system(size: 20, weight: .bold))
+                    .lineLimit(1).minimumScaleFactor(0.7)
+                Spacer(minLength: 0)
+                Button { step(-1) } label: { Image(systemName: "chevron.left") }
+                Button("Today", action: goToToday)
+                Button { step(1) } label: { Image(systemName: "chevron.right") }
+            }
+            HStack(spacing: WSSpace.m) {
+                Picker("View", selection: Binding(get: { model.calendarMode }, set: { setMode($0) })) {
+                    ForEach(CalendarMode.allCases) { mode in Text(mode.title).tag(mode) }
+                }
+                .pickerStyle(.segmented)
+                scopeMenu
+            }
+        }
+        .padding(.horizontal, WSSpace.l)
+        .padding(.vertical, WSSpace.s)
+    }
+    #else
     private var header: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: WSSpace.m) {
@@ -212,6 +245,7 @@ struct CalendarView: View {
         .padding(.horizontal, WSSpace.xl)
         .padding(.vertical, WSSpace.m)
     }
+    #endif
 
     private var titleText: some View {
         Text(title)
@@ -238,7 +272,7 @@ struct CalendarView: View {
             }
             Picker("View", selection: Binding(get: { model.calendarMode }, set: { setMode($0) })) {
                 ForEach(CalendarMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
+                    Text(mode.title).tag(mode)
                 }
             }
             .pickerStyle(.segmented)
@@ -290,6 +324,24 @@ struct CalendarView: View {
         .help("Filter the calendar to a folder, class or project")
     }
 
+    #if os(iOS)
+    private var accessBanner: some View {
+        VStack(alignment: .leading, spacing: WSSpace.s) {
+            Text("Bring in your calendars").font(.system(size: 14, weight: .semibold))
+            HStack {
+                if source.isGoogleAvailable && !source.isGoogleConnected {
+                    Button("Connect Google") { model.connectGoogle() }.buttonStyle(.borderedProminent)
+                }
+                if source.access == .notDetermined || source.access == .writeOnly {
+                    Button("Allow Calendars") { Task { await source.requestAccess() } }.buttonStyle(.bordered)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, WSSpace.l).padding(.vertical, WSSpace.s)
+        .background(WSColor.weekend)
+    }
+    #else
     private var accessBanner: some View {
         HStack(spacing: WSSpace.m) {
             Image(systemName: "calendar.badge.plus")
@@ -315,17 +367,18 @@ struct CalendarView: View {
         .padding(.horizontal, WSSpace.xl).padding(.vertical, WSSpace.m)
         .background(WSColor.weekend)
     }
+    #endif
 
     // MARK: Navigation
 
     private func setMode(_ mode: CalendarMode) {
         model.calendarMode = mode
-        if mode == .week { model.calendarAnchor = Dashboard.weekStart(containing: model.calendarAnchor) }
+        if mode == .week, CalendarMode.weekLength == 7 { model.calendarAnchor = Dashboard.weekStart(containing: model.calendarAnchor) }
     }
 
     private func goToToday() {
         let today = LocalDate(Date())
-        model.calendarAnchor = model.calendarMode == .week ? Dashboard.weekStart(containing: today) : today
+        model.calendarAnchor = model.calendarMode == .week && CalendarMode.weekLength == 7 ? Dashboard.weekStart(containing: today) : today
     }
 
     private func step(_ direction: Int) {

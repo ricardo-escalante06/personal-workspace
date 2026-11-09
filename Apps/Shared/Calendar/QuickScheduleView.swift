@@ -68,7 +68,15 @@ struct QuickScheduleView: View {
             }
         }
         .padding(WSSpace.m)
+        #if os(iOS)
+        // A sheet on iPhone: content starts at the top, no empty band above it.
+        .padding(.top, WSSpace.s)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .presentationDetents([.medium, .large])
+        .task { try? await Task.sleep(for: .milliseconds(350)); focused = true }
+        #else
         .frame(width: 380)
+        #endif
         .onAppear {
             focused = true
             calendarId = model.calendarSource.defaultCalendarId
