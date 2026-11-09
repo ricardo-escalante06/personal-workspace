@@ -59,6 +59,39 @@ public final class SupabaseBackend: Sendable {
     public func signOut() async throws {
         try await client.auth.signOut()
     }
+
+    /// Subscribes to row changes on the user's synced tables (RLS-filtered by
+    /// Realtime) and calls `onChange` for each one. Payloads are ignored: the
+    /// event only means "pull now". Cancel the returned feed to unsubscribe.
+    public func startChangeFeed(onChange: @escaping @Sendable () async -> Void) async throws -> ChangeFeed {
+        let channel = client.channel("workspace-sync-\(UUID().uuidString.prefix(8))")
+        let changes = channel.postgresChange(AnyAction.self, schema: "public")
+        try await channel.subscribeWithError()
+        let listener = Task {
+            for await _ in changes {
+                await onChange()
+            }
+        }
+        return ChangeFeed(client: client, channel: channel, listener: listener)
+    }
+}
+
+/// A live Realtime subscription. Call `cancel()` on sign-out.
+public final class ChangeFeed: Sendable {
+    let client: SupabaseClient
+    let channel: RealtimeChannelV2
+    let listener: Task<Void, Never>
+
+    init(client: SupabaseClient, channel: RealtimeChannelV2, listener: Task<Void, Never>) {
+        self.client = client
+        self.channel = channel
+        self.listener = listener
+    }
+
+    public func cancel() async {
+        listener.cancel()
+        await client.removeChannel(channel)
+    }
 }
 
 /// `SyncRemote` over PostgREST. RLS on the server scopes every query to the signed-in user.

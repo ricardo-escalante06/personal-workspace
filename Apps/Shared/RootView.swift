@@ -18,7 +18,7 @@ struct RootView: View {
             if showTokens {
                 TokenGallery()
             } else {
-                ScopeTaskList(scope: model.selection)
+                ScopeTaskList(scope: model.selectedScope)
             }
         }
         .toolbar {
@@ -45,7 +45,7 @@ private struct Sidebar: View {
         @Bindable var model = model
         List(selection: $model.selection) {
             Label("All Workspace", systemImage: "square.grid.2x2")
-                .tag(Optional<UUID>.none)
+                .tag(SidebarItem.allWorkspace)
 
             Section("Workspace") {
                 if model.tree.isEmpty {
@@ -55,7 +55,7 @@ private struct Sidebar: View {
                 }
                 OutlineGroup(model.tree, children: \.childrenOrNil) { node in
                     SidebarRow(container: node.container)
-                        .tag(Optional(node.id))
+                        .tag(SidebarItem.container(node.id))
                         .contextMenu { ContainerMenu(parent: node.container) }
                 }
             }
