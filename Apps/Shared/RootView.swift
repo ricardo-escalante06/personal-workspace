@@ -54,8 +54,17 @@ struct RootView: View {
         .sheet(isPresented: $model.showPalette) {
             CommandPalette()
         }
-        .overlay(alignment: .bottom) { ToastView() }
+        .overlay(alignment: .bottom) {
+            VStack(spacing: WSSpace.s) {
+                ToastView()
+                if model.selection != .calendar { SelectionBar() }
+            }
+        }
         .animation(.smooth(duration: 0.25), value: model.toast?.id)
+        .animation(.smooth(duration: 0.2), value: model.selectedTaskIds.count > 1)
+        #if os(macOS)
+        .background(KeyDownCatcher { event in handleTaskKeys(event) })
+        #endif
         .onAppear { model.undoManager = undoManager }
         .onChange(of: undoManager) { _, manager in model.undoManager = manager }
         .background {
@@ -70,8 +79,34 @@ struct RootView: View {
         .sheet(item: $model.containerEditor) { request in
             ContainerEditorSheet(request: request)
         }
+        .sheet(item: $model.seriesEditor) { request in
+            AssignmentSeriesSheet(request: request)
+        }
     }
 }
+
+#if os(macOS)
+extension RootView {
+    /// Outside the calendar (which has its own keys): ⌫ deletes the selected tasks
+    /// (⌘Z brings them back), Esc clears a multi-selection.
+    func handleTaskKeys(_ event: NSEvent) -> Bool {
+        guard model.selection != .calendar, model.quickAdd == nil, !model.showPalette else { return false }
+        switch event.keyCode {
+        case 51, 117:  // delete, forward delete
+            let ids = Array(model.selectedTaskIds)
+            guard !ids.isEmpty else { return false }
+            model.deleteTasks(ids)
+            return true
+        case 53:  // escape
+            guard model.selectedTaskIds.count > 1 else { return false }
+            model.clearSelection()
+            return true
+        default:
+            return false
+        }
+    }
+}
+#endif
 
 /// Alerts and confirmations for the main window (split out to keep RootView's body
 /// small enough for the type checker).
@@ -82,11 +117,28 @@ private struct RootDialogs: ViewModifier {
         content
             .modifier(EventDialogs())
             .modifier(CalendarDialogs())
+            .modifier(TagDialogs())
             .alert("Something went wrong", isPresented: .constant(model.errorMessage != nil)) {
                 Button("OK") { model.errorMessage = nil }
             } message: {
                 Text(model.errorMessage ?? "")
             }
+    }
+}
+
+private struct TagDialogs: ViewModifier {
+    @Environment(AppModel.self) private var model
+    @State private var name = ""
+
+    func body(content: Content) -> some View {
+        content
+            .alert("Rename Tag", isPresented: Binding(get: { model.renamingTag != nil },
+                                                      set: { if !$0 { model.renamingTag = nil } })) {
+                TextField("Name", text: $name)
+                Button("Rename") { if let t = model.renamingTag { model.renameTag(t.id, to: name) } }
+                Button("Cancel", role: .cancel) {}
+            }
+            .onChange(of: model.renamingTag?.id) { name = model.renamingTag?.name ?? "" }
     }
 }
 
@@ -189,7 +241,7 @@ private struct Sidebar: View {
             .dropDestination(for: String.self) { ids, _ in
                 guard let payload = ids.first, payload.hasPrefix("due-"),
                       let taskId = UUID(uuidString: String(payload.dropFirst(4))) else { return false }
-                model.editTask(taskId) { $0.containerId = nil }
+                model.editTasks(model.targets(for: taskId), "Move to Inbox") { $0.containerId = nil }
                 return true
             }
             Label("Calendar", systemImage: "calendar")
@@ -235,7 +287,7 @@ private struct Sidebar: View {
         }
         // A task dragged from the dashboard onto a list/class/project moves it there.
         if payload.hasPrefix("due-"), let taskId = UUID(uuidString: String(payload.dropFirst(4))), target.kind.holdsTasks {
-            model.editTask(taskId) { $0.containerId = target.id }
+            model.editTasks(model.targets(for: taskId), "Move to \(target.name)") { $0.containerId = target.id }
             return true
         }
         return false
@@ -327,7 +379,7 @@ private struct SidebarDropDelegate: DropDelegate {
                     model.placeContainer(id, relativeTo: target, where_)
                 } else if payload.hasPrefix("due-"), let taskId = UUID(uuidString: String(payload.dropFirst(4))),
                           target.kind.holdsTasks {
-                    model.editTask(taskId) { $0.containerId = target.id }
+                    model.editTasks(model.targets(for: taskId), "Move to \(target.name)") { $0.containerId = target.id }
                 }
             }
         }
@@ -558,6 +610,9 @@ private struct ContainerMenu: View {
         NewContainerMenu(parent: container)
         Divider()
         Button("Edit…") { model.editContainer(container) }
+        if container.kind == .class {
+            Button("New Assignment Series…") { model.seriesEditor = SeriesEditorRequest(classId: container.id) }
+        }
         Menu("Color") {
             ForEach(ContainerColor.allCases) { color in
                 Button {

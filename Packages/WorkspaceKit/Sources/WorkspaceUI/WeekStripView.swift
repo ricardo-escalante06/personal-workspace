@@ -33,20 +33,23 @@ public struct WeekStripView: View {
 
     let days: [WeekDay]
     let today: LocalDate
-    let selectedTaskId: UUID?
+    let selectedTaskIds: Set<UUID>
     let colorFor: (TaskItem) -> ContainerColor
+    let tagFor: (TaskItem) -> TagStyle?
     let actions: Actions
     let maxChips: Int
 
     @State private var dropTarget: LocalDate?
 
-    public init(days: [WeekDay], today: LocalDate, selectedTaskId: UUID?, maxChips: Int = 5,
-                colorFor: @escaping (TaskItem) -> ContainerColor, actions: Actions) {
+    public init(days: [WeekDay], today: LocalDate, selectedTaskIds: Set<UUID>, maxChips: Int = 5,
+                colorFor: @escaping (TaskItem) -> ContainerColor,
+                tagFor: @escaping (TaskItem) -> TagStyle? = { _ in nil }, actions: Actions) {
         self.days = days
         self.today = today
-        self.selectedTaskId = selectedTaskId
+        self.selectedTaskIds = selectedTaskIds
         self.maxChips = maxChips
         self.colorFor = colorFor
+        self.tagFor = tagFor
         self.actions = actions
     }
 
@@ -144,7 +147,7 @@ public struct WeekStripView: View {
                     .background(Circle().fill(isToday ? WSColor.now : .clear))
             }
             ForEach(visible) { chip in
-                WeekChipView(chip: chip, color: colorFor(chip.task), isSelected: chip.task.id == selectedTaskId)
+                WeekChipView(chip: chip, color: colorFor(chip.task), tag: tagFor(chip.task), isSelected: selectedTaskIds.contains(chip.task.id))
                     .onTapGesture(count: 2) { actions.openTask(chip.task.id) }
                     .simultaneousGesture(TapGesture().onEnded { actions.selectTask(chip.task.id) })
                     .contextMenu {
@@ -180,11 +183,13 @@ public struct WeekStripView: View {
 public struct WeekChipView: View {
     let chip: WeekChip
     let color: ContainerColor
+    let tag: TagStyle?
     let isSelected: Bool
 
-    public init(chip: WeekChip, color: ContainerColor, isSelected: Bool) {
+    public init(chip: WeekChip, color: ContainerColor, tag: TagStyle? = nil, isSelected: Bool) {
         self.chip = chip
         self.color = color
+        self.tag = tag
         self.isSelected = isSelected
     }
 
@@ -199,10 +204,13 @@ public struct WeekChipView: View {
                     .strikethrough(chip.isDone)
                     .foregroundStyle(chip.isDone ? WSColor.textTertiary : WSColor.textPrimary)
                     .lineLimit(1)
-                meta
-                    .font(.system(size: 10.5).monospacedDigit())
-                    .foregroundStyle(WSColor.textSecondary)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    if let tag { TagPill(tag, compact: true) }
+                    meta
+                        .font(.system(size: 10.5).monospacedDigit())
+                        .foregroundStyle(WSColor.textSecondary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -230,7 +238,7 @@ public struct WeekChipView: View {
     @ViewBuilder private var meta: some View {
         switch chip.kind {
         case .due(let time):
-            Label(time.map(WSFormat.time) ?? "Due", systemImage: "flag.fill")
+            Label(time.map(WSFormat.time) ?? "Due", systemImage: chip.task.isMilestone ? "diamond.fill" : "flag.fill")
                 .labelStyle(.titleAndIcon)
                 .imageScale(.small)
         case .scheduled(let block):

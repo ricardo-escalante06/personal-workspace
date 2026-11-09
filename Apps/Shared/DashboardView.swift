@@ -32,17 +32,19 @@ struct DashboardView: View {
                 if data.tasks.isEmpty && children.isEmpty {
                     emptyState
                 } else {
+                    if !data.starred.isEmpty { starredSection }
                     WeekStripView(
                         days: data.week,
                         today: today,
-                        selectedTaskId: model.selectedTaskId,
+                        selectedTaskIds: model.selectedTaskIds,
                         colorFor: { ContainerColor(named: model.color(for: $0)) },
+                        tagFor: { model.tagStyle($0.categoryId) },
                         actions: .init(
                             previousWeek: { model.shiftWeek(-1) },
                             nextWeek: { model.shiftWeek(1) },
                             thisWeek: { model.goToThisWeek() },
                             openCalendar: { model.openCalendar(scope: scope, weekStart: model.weekStart) },
-                            selectTask: { model.select($0) },
+                            selectTask: { model.click($0, in: []) },
                             openTask: { model.openDetails($0) },
                             toggleTask: { model.toggleDone($0) },
                             addOnDay: { model.quickAdd = QuickAddRequest(presetDue: $0) },
@@ -52,7 +54,11 @@ struct DashboardView: View {
                     todayAndUpcoming
                     // The full task list belongs to task-holding views (lists, classes, projects).
                     // All Workspace and folders show what's inside them instead.
-                    if scopeContainer?.kind.holdsTasks == true { taskList }
+                    if scopeContainer?.kind == .project, let scope {
+                        ProjectViews(projectId: scope, tasks: data.tasks)
+                    } else if scopeContainer?.kind.holdsTasks == true {
+                        taskList
+                    }
                     if !children.isEmpty { childrenSection }
                 }
             }
@@ -151,6 +157,23 @@ struct DashboardView: View {
         }
     }
 
+    // MARK: Starred
+
+    /// Big things (starred, or an Exam) pinned above everything else until they're done.
+    private var starredSection: some View {
+        VStack(alignment: .leading, spacing: WSSpace.s) {
+            SectionLabel("Starred", trailing: "\(data.starred.count)")
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: WSSpace.s) {
+                    ForEach(data.starred) { task in
+                        StarredCard(task: task, today: today)
+                            .taskInteractions(task, order: data.starred.map(\.id), draggable: false)
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: Today + Upcoming
 
     private var todayAndUpcoming: some View {
@@ -211,6 +234,7 @@ struct DashboardView: View {
     }
 
     private func notepadRow(_ task: TaskItem, trailing: String?, overdue: Bool = false) -> some View {
+        let order = data.today.map(\.task.id) + data.overdue.map(\.id)
         let container = model.container(for: task)
         let subtitle: String? = (container?.id == scope) ? nil : (container?.name ?? "Inbox")
         return NotepadRow(
@@ -218,17 +242,15 @@ struct DashboardView: View {
             subtitle: subtitle,
             isDone: task.status == .done,
             ink: ContainerColor(named: container?.color ?? "grey"),
-            isSelected: model.selectedTaskId == task.id,
+            isSelected: model.isSelected(task.id),
             onToggle: { model.toggleDone(task) }
         ) {
+            if let tag = model.tagStyle(task.categoryId) { TagPill(tag) }
             if let trailing {
                 Text(trailing).foregroundStyle(overdue ? WSColor.now : WSColor.textSecondary)
             }
         }
-        .onTapGesture(count: 2) { model.openDetails(task.id) }
-        .simultaneousGesture(TapGesture().onEnded { model.select(task.id) })
-        .contextMenu { TaskContextMenu(task: task) }
-        .draggable("due-\(task.id.uuidString)")
+        .taskInteractions(task, order: order)
     }
 
     /// Deadlines only, two weeks out. Work blocks already show in the week strip.
@@ -252,7 +274,7 @@ struct DashboardView: View {
                         .padding(.leading, WSSpace.s)
                         .padding(.top, WSSpace.xs)
                     ForEach(tasks) { task in
-                        row(task, dueText: task.dueTime.map(WSFormat.time))
+                        row(task, dueText: task.dueTime.map(WSFormat.time), order: groups.flatMap { $0.value.map(\.id) })
                     }
                 }
             }
@@ -281,7 +303,9 @@ struct DashboardView: View {
                 }
             }
 
+        let listOrder = groups.flatMap { $0.value.sorted(by: taskOrder).map(\.id) }
         return VStack(alignment: .leading, spacing: WSSpace.s) {
+            if scopeContainer?.kind == .class, let scope { SeriesStrip(classId: scope) }
             HStack {
                 SectionLabel("Tasks", trailing: "\(data.tasks.filter { $0.status != .done }.count) open")
                 Toggle("Show completed", isOn: $showCompleted)
@@ -289,14 +313,15 @@ struct DashboardView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(WSColor.textSecondary)
             }
-            if presentCategories.count > 1 {
+            if !presentCategories.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: WSSpace.xs) {
                         FilterChip(title: "All", isOn: categoryFilter == nil) { categoryFilter = nil }
                         ForEach(presentCategories) { c in
-                            FilterChip(title: c.name, symbol: c.symbol, isOn: categoryFilter == .some(c.id)) {
-                                categoryFilter = .some(c.id)
+                            FilterChip(title: c.name, tag: TagStyle(c), isOn: categoryFilter == .some(c.id)) {
+                                categoryFilter = categoryFilter == .some(c.id) ? nil : .some(c.id)
                             }
+                            .contextMenu { TagMenu(tag: c) }
                         }
                     }
                 }
@@ -310,15 +335,22 @@ struct DashboardView: View {
             ForEach(groups, id: \.key) { categoryId, tasks in
                 VStack(alignment: .leading, spacing: 0) {
                     if groups.count > 1 || categoryId != nil {
-                        Text(model.category(categoryId)?.name ?? "Other")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(WSColor.textSecondary)
-                            .padding(.top, WSSpace.s)
-                            .padding(.bottom, 2)
-                            .padding(.leading, WSSpace.s)
+                        HStack(spacing: 6) {
+                            if let c = model.category(categoryId) {
+                                Circle().fill(ContainerColor(named: c.color ?? "grey").accent).frame(width: 7, height: 7)
+                            }
+                            Text(model.category(categoryId)?.name ?? "No tag")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(WSColor.textSecondary)
+                            Text("\(tasks.filter { $0.status != .done }.count)")
+                                .font(.system(size: 11)).foregroundStyle(WSColor.textTertiary)
+                        }
+                        .padding(.top, WSSpace.s)
+                        .padding(.bottom, 2)
+                        .padding(.leading, WSSpace.s)
                     }
                     ForEach(tasks.sorted(by: taskOrder)) { task in
-                        row(task, dueText: WSFormat.due(task, today: today),
+                        row(task, dueText: WSFormat.due(task, today: today), order: listOrder,
                             overdue: task.dueDate.map { $0 < today } ?? false)
                     }
                 }
@@ -386,7 +418,7 @@ struct DashboardView: View {
 
     // MARK: Rows
 
-    private func row(_ task: TaskItem, timeText: String? = nil, dueText: String? = nil,
+    private func row(_ task: TaskItem, timeText: String? = nil, dueText: String? = nil, order: [UUID] = [],
                      overdue: Bool = false, showDueDateOnly: Bool = false) -> some View {
         let container = model.container(for: task)
         // In broader scopes, say where the task lives.
@@ -396,60 +428,52 @@ struct DashboardView: View {
             context: .init(
                 color: ContainerColor(named: container?.color ?? "grey"),
                 subtitle: subtitle,
-                categorySymbol: model.category(task.categoryId)?.symbol,
+                tag: model.tagStyle(task.categoryId),
+                isStarred: model.isStarred(task),
                 subtasks: data.subtaskProgress[task.id],
                 timeText: timeText,
                 dueText: dueText,
                 isOverdue: overdue
             ),
-            isSelected: model.selectedTaskId == task.id,
+            isSelected: model.isSelected(task.id),
             onToggle: { model.toggleDone(task) }
         )
-        .onTapGesture(count: 2) { model.openDetails(task.id) }
-        .simultaneousGesture(TapGesture().onEnded { model.select(task.id) })
-        .contextMenu { TaskContextMenu(task: task) }
-        .draggable("due-\(task.id.uuidString)")
+        .taskInteractions(task, order: order)
     }
 }
 
 // MARK: - Small pieces
 
-struct TaskContextMenu: View {
+/// Right-click on a tag: color, auto-star, rename, delete.
+struct TagMenu: View {
     @Environment(AppModel.self) private var model
-    let task: TaskItem
+    let tag: TaskCategory
 
     var body: some View {
-        Button(task.status == .done ? "Mark Not Done" : "Mark Done") { model.toggleDone(task) }
-        Button("Open Details") { model.openDetails(task.id) }
-        Menu("Due") {
-            Button("Today") { model.editTask(task.id) { $0.dueDate = LocalDate(Date()) } }
-            Button("Tomorrow") { model.editTask(task.id) { $0.dueDate = LocalDate(Date()).adding(days: 1) } }
-            Button("Next Week") { model.editTask(task.id) { $0.dueDate = LocalDate(Date()).adding(days: 7) } }
-            Divider()
-            Button("No Due Date") { model.editTask(task.id) { $0.dueDate = nil } }
-        }
-        Menu("Move to") {
-            Button("Inbox") { model.editTask(task.id) { $0.containerId = nil } }
-            Divider()
-            ForEach(model.taskHolders.filter { $0.archivedAt == nil }) { c in
-                Button(model.locationLabels[c.id] ?? c.name) { model.editTask(task.id) { $0.containerId = c.id } }
+        Menu("Color") {
+            ForEach(ContainerColor.allCases) { c in
+                Button { model.setTagColor(tag.id, c.rawValue) } label: {
+                    Label { Text(c.displayName + (tag.color == c.rawValue ? "  ✓" : "")) } icon: { ColorSwatchImage.image(for: c) }
+                }
             }
         }
+        Toggle("Star Automatically", isOn: Binding(get: { tag.autoStar }, set: { model.setAutoStar(tag.id, $0) }))
+        Button("Rename…") { model.renamingTag = tag }
         Divider()
-        Button("Delete", role: .destructive) { model.deleteTask(task.id) }
+        Button("Delete Tag", role: .destructive) { model.deleteTag(tag.id) }
     }
 }
 
-private struct FilterChip: View {
+struct FilterChip: View {
     let title: String
-    var symbol: String?
+    var tag: TagStyle?
     let isOn: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 4) {
-                if let symbol { Image(systemName: symbol).imageScale(.small) }
+            HStack(spacing: 5) {
+                if let tag { Circle().fill(tag.color.accent).frame(width: 7, height: 7) }
                 Text(title)
             }
             .font(.system(size: 12, weight: isOn ? .semibold : .regular))
@@ -506,6 +530,59 @@ private struct ChildCard: View {
         .padding(WSSpace.m)
         .background(RoundedRectangle(cornerRadius: WSRadius.block).fill(WSColor.weekend))
         .overlay(RoundedRectangle(cornerRadius: WSRadius.block).strokeBorder(WSColor.hairline))
+        .contentShape(Rectangle())
+    }
+}
+
+/// One starred item: what, where, when, and how far off.
+private struct StarredCard: View {
+    @Environment(AppModel.self) private var model
+    let task: TaskItem
+    let today: LocalDate
+
+    var body: some View {
+        let container = model.container(for: task)
+        let color = ContainerColor(named: container?.color ?? "grey")
+        let days = task.dueDate.map { today.daysUntil($0) }
+        HStack(alignment: .top, spacing: WSSpace.s) {
+            RoundedRectangle(cornerRadius: 1.5).fill(color.accent).frame(width: 3)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    Text(task.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(WSColor.textPrimary)
+                        .lineLimit(1)
+                    if let tag = model.tagStyle(task.categoryId) { TagPill(tag) }
+                }
+                HStack(spacing: 4) {
+                    Text(container?.name ?? "Inbox")
+                    if let due = task.dueDate {
+                        Text("·")
+                        Text(WSFormat.relativeDay(due, today: today) + (task.dueTime.map { " " + WSFormat.time($0) } ?? ""))
+                    }
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(WSColor.textSecondary)
+                .lineLimit(1)
+            }
+            Spacer(minLength: WSSpace.s)
+            if let days {
+                VStack(spacing: 0) {
+                    Text(days <= 0 ? "Today" : "\(days)")
+                        .font(.system(size: days <= 0 ? 12 : 17, weight: .semibold).monospacedDigit())
+                    if days > 0 {
+                        Text(days == 1 ? "day" : "days").font(.system(size: 9.5))
+                    }
+                }
+                .foregroundStyle(days <= 3 ? WSColor.now : WSColor.textSecondary)
+                .frame(minWidth: 34)
+            }
+        }
+        .padding(.vertical, WSSpace.s).padding(.horizontal, WSSpace.s + 2)
+        .frame(width: 260, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: WSRadius.block).fill(WSColor.weekend))
+        .overlay(RoundedRectangle(cornerRadius: WSRadius.block)
+            .strokeBorder(model.isSelected(task.id) ? color.accent : WSColor.hairline))
         .contentShape(Rectangle())
     }
 }

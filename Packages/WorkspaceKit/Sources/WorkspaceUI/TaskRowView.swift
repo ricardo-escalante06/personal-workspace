@@ -40,17 +40,18 @@ public struct TaskRowView: View {
         public var color: ContainerColor
         /// Shown under the title, e.g. the container name in broader scopes.
         public var subtitle: String?
-        public var categorySymbol: String?
+        public var tag: TagStyle?
+        public var isStarred: Bool
         public var subtasks: SubtaskProgress?
         /// e.g. "7–8 PM" for a block today.
         public var timeText: String?
         public var dueText: String?
         public var isOverdue: Bool
 
-        public init(color: ContainerColor, subtitle: String? = nil, categorySymbol: String? = nil,
+        public init(color: ContainerColor, subtitle: String? = nil, tag: TagStyle? = nil, isStarred: Bool = false,
                     subtasks: SubtaskProgress? = nil, timeText: String? = nil,
                     dueText: String? = nil, isOverdue: Bool = false) {
-            self.color = color; self.subtitle = subtitle; self.categorySymbol = categorySymbol
+            self.color = color; self.subtitle = subtitle; self.tag = tag; self.isStarred = isStarred
             self.subtasks = subtasks; self.timeText = timeText; self.dueText = dueText; self.isOverdue = isOverdue
         }
     }
@@ -74,11 +75,20 @@ public struct TaskRowView: View {
                 .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(task.title)
-                    .font(WSFont.rowTitle)
-                    .strikethrough(done, color: WSColor.textTertiary)
-                    .foregroundStyle(done ? WSColor.textTertiary : WSColor.textPrimary)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(task.title)
+                        .font(WSFont.rowTitle)
+                        .strikethrough(done, color: WSColor.textTertiary)
+                        .foregroundStyle(done ? WSColor.textTertiary : WSColor.textPrimary)
+                        .lineLimit(1)
+                    if let tag = context.tag { TagPill(tag).opacity(done ? 0.5 : 1) }
+                    if context.isStarred {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color(hex: 0xD6A740))
+                            .accessibilityLabel("Starred")
+                    }
+                }
                 if let subtitle = context.subtitle {
                     Text(subtitle)
                         .font(.system(size: 11))
@@ -93,9 +103,6 @@ public struct TaskRowView: View {
                 if let p = context.subtasks, p.total > 0 {
                     Label("\(p.done)/\(p.total)", systemImage: "checklist")
                         .labelStyle(.titleAndIcon)
-                }
-                if let symbol = context.categorySymbol {
-                    Image(systemName: symbol)
                 }
                 if let time = context.timeText {
                     Text(time)

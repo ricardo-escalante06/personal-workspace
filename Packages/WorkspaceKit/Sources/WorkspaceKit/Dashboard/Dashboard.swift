@@ -15,6 +15,8 @@ public struct DashboardData: Sendable, Equatable {
     /// Open tasks with a deadline from tomorrow through the next 14 days, soonest first.
     /// Deadlines only: work blocks are already visible in the week strip.
     public var dueSoon: [TaskItem]
+    /// Starred open tasks (by hand, or tagged with an auto-star tag like Exam), soonest first.
+    public var starred: [TaskItem]
     /// Seven days starting at the requested week start.
     public var week: [WeekDay]
     /// Top-level tasks in scope (subtasks are shown under their parent).
@@ -23,7 +25,7 @@ public struct DashboardData: Sendable, Equatable {
     public var subtaskProgress: [UUID: SubtaskProgress]
 
     public static let empty = DashboardData(
-        metrics: Metrics(), today: [], overdue: [], upcoming: [], dueSoon: [], week: [], tasks: [], subtaskProgress: [:]
+        metrics: Metrics(), today: [], overdue: [], upcoming: [], dueSoon: [], starred: [], week: [], tasks: [], subtaskProgress: [:]
     )
 }
 
@@ -111,7 +113,9 @@ public enum Dashboard {
         let rangeStart = min(weekStart, today).startOfDay(in: timeZone)
         let rangeEnd = max(weekStart.adding(days: 7), today.adding(days: 8)).startOfDay(in: timeZone)
         let blocks = try ScopeQuery.scheduleBlocks(in: scope, from: rangeStart, to: rangeEnd).fetchAll(db)
-        return build(tasks: tasks, blocks: blocks, weekStart: weekStart, now: now, timeZone: timeZone)
+        let autoStar = Set(try TaskCategory.live().filter(Column("auto_star") == true).fetchAll(db).map(\.id))
+        return build(tasks: tasks, blocks: blocks, weekStart: weekStart, now: now, timeZone: timeZone,
+                     autoStarCategories: autoStar)
     }
 
     public static func build(
@@ -119,7 +123,8 @@ public enum Dashboard {
         blocks: [ScheduleBlock],
         weekStart: LocalDate,
         now: Date,
-        timeZone: TimeZone
+        timeZone: TimeZone,
+        autoStarCategories: Set<UUID> = []
     ) -> DashboardData {
         let today = LocalDate(now, in: timeZone)
         let liveTasks = allTasks.filter { $0.deletedAt == nil && $0.status != .cancelled }
@@ -200,6 +205,21 @@ public enum Dashboard {
                 return a.title.localizedStandardCompare(b.title) == .orderedAscending
             }
 
+        let starred = liveTasks
+            .filter { t in
+                !t.status.isClosed && (t.isStarred || t.categoryId.map(autoStarCategories.contains) == true)
+                    // Past auto-starred exams drop off; ones you starred by hand stay until done.
+                    && (t.isStarred || (t.dueDate.map { $0 >= today } ?? true))
+            }
+            .sorted { a, b in
+                switch (a.dueDate, b.dueDate) {
+                case let (x?, y?) where x != y: return x < y
+                case (_?, nil): return true
+                case (nil, _?): return false
+                default: return a.title.localizedStandardCompare(b.title) == .orderedAscending
+                }
+            }
+
         // Week strip.
         var week: [WeekDay] = []
         for offset in 0..<7 {
@@ -241,7 +261,7 @@ public enum Dashboard {
         m.progress = countable.isEmpty ? 0 : Double(countable.filter { $0.status == .done }.count) / Double(countable.count)
 
         return DashboardData(
-            metrics: m, today: todayItems, overdue: overdue, upcoming: upcoming, dueSoon: dueSoon,
+            metrics: m, today: todayItems, overdue: overdue, upcoming: upcoming, dueSoon: dueSoon, starred: starred,
             week: week, tasks: topLevel, subtaskProgress: subtaskProgress
         )
     }

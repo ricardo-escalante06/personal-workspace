@@ -155,6 +155,37 @@ enum LocalSchema {
                 t.column("notes", .text)
             }
         }
+        // Milestone 3: stars, start dates, project milestones, assignment series.
+        m.registerMigration("v3-milestone3") { db in
+            try db.alter(table: "tasks") { t in
+                t.add(column: "is_starred", .boolean).notNull().defaults(to: false)
+                t.add(column: "start_date", .text)
+                t.add(column: "is_milestone", .boolean).notNull().defaults(to: false)
+                t.add(column: "milestone_id", .blob)
+                t.add(column: "series_index", .integer)
+            }
+            try db.create(index: "tasks_milestone_id", on: "tasks", columns: ["milestone_id"])
+            try db.create(index: "tasks_generated_by_rule_id", on: "tasks", columns: ["generated_by_rule_id"])
+            try db.alter(table: "categories") { t in
+                t.add(column: "auto_star", .boolean).notNull().defaults(to: false)
+            }
+            try db.create(table: "assignment_rules") { t in
+                t.primaryKey("id", .blob)
+                t.column("owner_id", .blob)
+                t.column("container_id", .blob).notNull().indexed()
+                t.column("category_id", .blob)
+                t.column("title_pattern", .text).notNull()
+                t.column("start_number", .integer).notNull()
+                t.column("count", .integer)
+                t.column("first_due_date", .text)
+                t.column("due_time", .text)
+                t.column("repeat", .text).notNull()
+                t.column("estimated_minutes", .integer)
+                t.column("created_at", .datetime).notNull()
+                t.column("updated_at", .datetime).notNull()
+                t.column("deleted_at", .datetime)
+            }
+        }
         return m
     }
 }

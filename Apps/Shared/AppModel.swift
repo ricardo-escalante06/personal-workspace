@@ -5,6 +5,7 @@ import Network
 import Observation
 import WorkspaceKit
 import WorkspaceRemote
+import WorkspaceUI
 
 /// App-wide state: the local store, the (optional) Supabase backend, and sync status.
 /// The UI reads from the local store only; sync runs in the background.
@@ -84,10 +85,26 @@ final class AppModel {
 
     // Dashboard / editing state
     private(set) var categories: [TaskCategory] = []
-    /// Task shown in the inspector.
+    /// Tag whose rename prompt is open.
+    var renamingTag: TaskCategory?
+    /// Class whose assignment-series sheet is open (and the series being edited, if any).
+    var seriesEditor: SeriesEditorRequest?
+    /// Task shown in the inspector (the last one clicked).
     var selectedTaskId: UUID? {
-        didSet { if selectedTaskId != nil { inspectedEvent = nil } }
+        didSet {
+            if selectedTaskId != nil { inspectedEvent = nil }
+            // Setting it directly (new task, palette…) makes it the whole selection.
+            if let id = selectedTaskId {
+                if !selectedTaskIds.contains(id) { selectedTaskIds = [id] }
+            } else if !selectedTaskIds.isEmpty {
+                selectedTaskIds = []
+            }
+        }
     }
+    /// Every selected task (⌘-click / ⇧-click add to it). Always contains `selectedTaskId`.
+    var selectedTaskIds: Set<UUID> = []
+    /// Where a ⇧-click range starts.
+    @ObservationIgnored private var selectionAnchor: UUID?
     /// Calendar event shown in the inspector (instead of a task).
     var inspectedEvent: ExternalEvent?
     var showInspector = false
@@ -336,7 +353,50 @@ final class AppModel {
     }
 
     func category(_ id: UUID?) -> TaskCategory? {
-        categories.first { $0.id == id }
+        guard let id else { return nil }
+        return categories.first { $0.id == id }
+    }
+
+    /// The tag pill for a task (nil when untagged).
+    func tagStyle(_ categoryId: UUID?) -> TagStyle? {
+        category(categoryId).map(TagStyle.init)
+    }
+
+    /// Starred by hand, or tagged with an auto-star tag (Exam).
+    func isStarred(_ task: TaskItem) -> Bool {
+        task.isStarred || category(task.categoryId)?.autoStar == true
+    }
+
+    // Tags
+
+    func toggleStar(_ task: TaskItem) {
+        editTask(task.id) { $0.isStarred.toggle() }
+    }
+
+    func setTagColor(_ id: UUID, _ color: String) {
+        perform { try store.update(TaskCategory.self, id) { $0.color = color } }
+    }
+
+    func renameTag(_ id: UUID, to name: String) {
+        let name = name.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        perform { try store.update(TaskCategory.self, id) { $0.name = name } }
+    }
+
+    func setAutoStar(_ id: UUID, _ on: Bool) {
+        perform { try store.update(TaskCategory.self, id) { $0.autoStar = on } }
+    }
+
+    func deleteTag(_ id: UUID) {
+        perform { try store.deleteTag(id) }
+    }
+
+    /// Tag picker "New Tag…": creates (or finds) the tag and applies it.
+    func applyNewTag(_ name: String, to taskId: UUID) {
+        undoable("Change Tag", [taskId]) {
+            let tag = try store.tag(named: name)
+            try store.editTask(taskId) { $0.categoryId = tag.id }
+        }
     }
 
     // Containers
@@ -437,6 +497,68 @@ final class AppModel {
         }
     }
 
+    /// Project views: make sure the board has columns (projects made before Milestone 3).
+    func ensureBoard(_ projectId: UUID) {
+        perform { try ensureProjectExtras(projectId) }
+    }
+
+    func createMilestone(_ title: String, in projectId: UUID) {
+        let title = title.trimmingCharacters(in: .whitespaces)
+        guard !title.isEmpty else { return }
+        undoableCreating("New Milestone") {
+            let m = try store.addTask(title: title, containerId: projectId)
+            try store.editTask(m.id) { $0.isMilestone = true }
+            return [m.id]
+        }
+    }
+
+    func addBoardColumn(to projectId: UUID) {
+        perform {
+            try store.db.write { db in
+                let last = try String.fetchOne(db, BoardColumn.live()
+                    .filter(Column("container_id") == projectId).select(max(Column("sort_rank"))))
+                var col = BoardColumn(containerId: projectId, name: "New column", mapsToStatus: .inProgress,
+                                      sortRank: Rank.between(last, nil))
+                try WorkspaceStore.save(&col, in: db)
+            }
+        }
+    }
+
+    func renameBoardColumn(_ id: UUID, to name: String) {
+        let name = name.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        perform { try store.update(BoardColumn.self, id) { $0.name = name } }
+    }
+
+    func setColumnStatus(_ id: UUID, _ status: TaskStatus) {
+        perform { try store.update(BoardColumn.self, id) { $0.mapsToStatus = status } }
+    }
+
+    /// Cards in a deleted column fall back to the first column for their status.
+    func deleteBoardColumn(_ id: UUID) {
+        perform { try store.update(BoardColumn.self, id) { $0.deletedAt = Date() } }
+    }
+
+    /// Drop on a board column: the card joins it (at the bottom) and takes its status.
+    func moveTasks(_ taskIds: [UUID], toColumn column: BoardColumn) {
+        undoable(taskIds.count == 1 ? "Move Card" : "Move \(taskIds.count) Cards", taskIds) {
+            var last = try store.db.read { db in
+                try String.fetchOne(db, TaskItem.live()
+                    .filter(Column("board_column_id") == column.id).select(max(Column("board_rank"))))
+            }
+            for taskId in taskIds {
+                let rank = Rank.between(last, nil)
+                last = rank
+                try store.editTask(taskId) { t in
+                    guard t.containerId == column.containerId else { return }
+                    t.boardColumnId = column.id
+                    t.boardRank = rank
+                    t.status = column.mapsToStatus
+                }
+            }
+        }
+    }
+
     private func ensureProjectExtras(_ id: UUID) throws {
         try store.db.write { db in
             if try ProjectMeta.live().filter(Column("container_id") == id).fetchCount(db) == 0 {
@@ -456,7 +578,9 @@ final class AppModel {
 
     func toggleDone(_ task: TaskItem) {
         let newStatus: TaskStatus = task.status == .done ? .notStarted : .done
-        setStatus(task.id, newStatus, previous: task.status, title: task.title)
+        undoable(newStatus == .done ? "Complete “\(task.title)”" : "Reopen “\(task.title)”", [task.id]) {
+            try store.setStatus(task.id, newStatus)
+        }
         if newStatus == .done {
             showToast(Toast(message: "Completed “\(task.title)”", undo: { [weak self] in
                 self?.undoManager?.undo()
@@ -464,21 +588,91 @@ final class AppModel {
         }
     }
 
-    /// Changes status and registers the inverse with the undo manager (so redo works too).
-    private func setStatus(_ id: UUID, _ status: TaskStatus, previous: TaskStatus, title: String) {
-        perform { try store.setStatus(id, status) }
-        undoManager?.registerUndo(withTarget: self) { model in
-            MainActor.assumeIsolated {
-                model.setStatus(id, previous, previous: status, title: title)
+    // MARK: Undo
+
+    @ObservationIgnored private var lastUndo: (key: String, at: Date)?
+
+    /// Runs `work` as one ⌘Z step: the tasks in `ids` (with their subtasks and work
+    /// blocks) go back to how they were. `work` returns the ids of tasks it created,
+    /// which undo removes. Edits with the same `coalesce` key in quick succession
+    /// (typing a title) share one step.
+    func undoableCreating(_ name: String, _ ids: [UUID] = [], coalesce: String? = nil, _ work: () throws -> [UUID]) {
+        let before = try? store.snapshot(ids)
+        do {
+            let created = try work()
+            guard var before, let undoManager else { return }
+            if let coalesce, let last = lastUndo, last.key == coalesce, Date().timeIntervalSince(last.at) < 2,
+               undoManager.undoActionName == name {
+                lastUndo = (coalesce, Date())
+                return
             }
+            lastUndo = coalesce.map { ($0, Date()) }
+            for id in created where before.tasks[id] == nil { before.tasks[id] = .some(nil) }
+            registerRestore(before, name: name)
+        } catch {
+            errorMessage = error.localizedDescription
         }
-        undoManager?.setActionName(status == .done ? "Complete “\(title)”" : "Reopen “\(title)”")
     }
 
-    /// Single click: select. The details panel follows the selection if it's open.
-    func select(_ taskId: UUID?) {
-        selectedTaskId = taskId
+    func undoable(_ name: String, _ ids: [UUID], coalesce: String? = nil, _ work: () throws -> Void) {
+        undoableCreating(name, ids, coalesce: coalesce) { try work(); return [] }
     }
+
+    /// Undo puts `snapshot` back and registers the reverse (that's redo).
+    private func registerRestore(_ snapshot: TaskSnapshot, name: String) {
+        undoManager?.registerUndo(withTarget: self) { model in
+            MainActor.assumeIsolated {
+                guard let current = try? model.store.snapshot(snapshot.taskIds) else { return }
+                model.perform { try model.store.restore(snapshot) }
+                model.lastUndo = nil
+                model.registerRestore(current, name: name)
+            }
+        }
+        undoManager?.setActionName(name)
+    }
+
+    // MARK: Selection
+
+    /// Single click: select just this task. The details panel follows it if open.
+    func select(_ taskId: UUID?) {
+        selectedTaskIds = taskId.map { [$0] } ?? []
+        selectedTaskId = taskId
+        selectionAnchor = taskId
+    }
+
+    /// A click on a task row. ⌘-click adds/removes it; ⇧-click selects the range
+    /// from the last click within `order` (the list it was clicked in).
+    func click(_ taskId: UUID, in order: [UUID]) {
+        let mods = Platform.modifierFlags
+        if mods.contains(.command) {
+            if selectedTaskIds.contains(taskId) {
+                selectedTaskIds.remove(taskId)
+                selectedTaskId = selectedTaskId == taskId ? selectedTaskIds.first : selectedTaskId
+            } else {
+                selectedTaskIds.insert(taskId)
+                selectedTaskId = taskId
+            }
+            selectionAnchor = taskId
+        } else if mods.contains(.shift) {
+            if let anchor = selectionAnchor, let a = order.firstIndex(of: anchor), let b = order.firstIndex(of: taskId) {
+                selectedTaskIds.formUnion(order[min(a, b)...max(a, b)])
+            } else {
+                selectedTaskIds.insert(taskId)  // no list order here (week strip, cards): just add it
+            }
+            selectedTaskId = taskId
+        } else {
+            select(taskId)
+        }
+    }
+
+    func isSelected(_ taskId: UUID) -> Bool { selectedTaskIds.contains(taskId) }
+
+    /// What a right-click acts on: the whole selection if the task is part of it.
+    func targets(for taskId: UUID) -> [UUID] {
+        selectedTaskIds.count > 1 && selectedTaskIds.contains(taskId) ? Array(selectedTaskIds) : [taskId]
+    }
+
+    func clearSelection() { select(nil) }
 
     /// Double-click, ⌘I, palette: select and show the details panel.
     func openDetails(_ taskId: UUID) {
@@ -496,35 +690,58 @@ final class AppModel {
         setInspector(visible: !showInspector)
     }
 
-    func editTask(_ id: UUID, _ change: (inout TaskItem) -> Void) {
-        perform { try store.editTask(id, change) }
+    /// `typing`: a text field edit; keystrokes in a row become one undo step.
+    func editTask(_ id: UUID, typing field: String? = nil, _ change: (inout TaskItem) -> Void) {
+        undoable(field.map { "Edit \($0)" } ?? "Edit Task", [id], coalesce: field.map { "\($0)-\(id)" }) {
+            try store.editTask(id, change)
+        }
     }
 
-    func deleteTask(_ id: UUID) {
-        let title = (try? store.db.read { try TaskItem.fetchOne($0, id: id) })?.title ?? "Task"
-        perform { try store.deleteTask(id) }
-        if selectedTaskId == id { selectedTaskId = nil }
-        undoManager?.registerUndo(withTarget: self) { model in
-            MainActor.assumeIsolated { model.restoreTask(id, title: title) }
+    /// The same change to several tasks, as one undo step.
+    func editTasks(_ ids: [UUID], _ name: String, _ change: (inout TaskItem) -> Void) {
+        guard ids.count > 1 else {
+            if let id = ids.first { undoable(name, [id]) { try store.editTask(id, change) } }
+            return
         }
-        undoManager?.setActionName("Delete “\(title)”")
+        undoable(name, ids) {
+            for id in ids { try store.editTask(id, change) }
+        }
     }
 
-    private func restoreTask(_ id: UUID, title: String) {
-        perform { try store.undeleteTask(id) }
-        undoManager?.registerUndo(withTarget: self) { model in
-            MainActor.assumeIsolated { model.deleteTask(id) }
+    /// Done / not done for several tasks.
+    func setDone(_ ids: [UUID], _ done: Bool) {
+        let n = ids.count
+        undoable(done ? "Complete \(n == 1 ? "Task" : "\(n) Tasks")" : "Reopen \(n == 1 ? "Task" : "\(n) Tasks")", ids) {
+            for id in ids { try store.setStatus(id, done ? .done : .notStarted) }
         }
-        undoManager?.setActionName("Delete “\(title)”")
+    }
+
+    func deleteTask(_ id: UUID) { deleteTasks([id]) }
+
+    func deleteTasks(_ ids: [UUID]) {
+        guard !ids.isEmpty else { return }
+        let title = ids.count == 1
+            ? "“\((try? store.db.read { try TaskItem.fetchOne($0, id: ids[0]) })?.title ?? "Task")”"
+            : "\(ids.count) Tasks"
+        undoable("Delete \(title)", ids) {
+            for id in ids { try store.deleteTask(id) }
+        }
+        if selectedTaskIds.contains(where: ids.contains) { clearSelection() }
+        if ids.count > 1 {
+            showToast(Toast(message: "Deleted \(ids.count) tasks", undo: { [weak self] in self?.undoManager?.undo() }))
+        }
     }
 
     /// A week-strip chip was dropped on another day.
     func moveChip(_ chipId: String, to day: LocalDate) {
         let parts = chipId.split(separator: "-", maxSplits: 1).map(String.init)
         guard parts.count == 2, let id = UUID(uuidString: parts[1]) else { return }
-        perform {
+        var taskId = id
+        if parts[0] == "block", let b = try? store.db.read({ try ScheduleBlock.fetchOne($0, id: id) }) { taskId = b.taskId }
+        let ids = parts[0] == "due" ? targets(for: id) : [taskId]
+        undoable(parts[0] == "due" ? "Change Due Date" : "Move Work Block", ids) {
             if parts[0] == "due" {
-                try store.editTask(id) { $0.dueDate = day }
+                for id in ids { try store.editTask(id) { $0.dueDate = day } }
             } else if parts[0] == "block",
                       let block = try store.db.read({ try ScheduleBlock.fetchOne($0, id: id) }) {
                 // Keep the time of day; move to the new date.
@@ -538,8 +755,9 @@ final class AppModel {
     }
 
     /// Creates a task from parsed quick-add text.
-    func createTask(from parsed: QuickAddParser.Result, defaultScope: UUID?) {
-        perform {
+    func createTask(from parsed: QuickAddParser.Result, defaultScope: UUID?,
+                    milestoneId: UUID? = nil, startDate: LocalDate? = nil) {
+        undoableCreating("New Task") {
             let destination: UUID?
             if let explicit = parsed.containerId {
                 destination = explicit
@@ -548,23 +766,35 @@ final class AppModel {
             } else {
                 destination = nil  // Inbox
             }
+            var categoryId = parsed.categoryId
+            if categoryId == nil, let newTag = parsed.newTagName {
+                categoryId = try store.tag(named: newTag).id
+            }
             let task = try store.addTask(
-                title: parsed.title, containerId: destination, categoryId: parsed.categoryId,
+                title: parsed.title, containerId: destination, categoryId: categoryId,
                 priority: parsed.priority, dueDate: parsed.dueDate, dueTime: parsed.dueTime
             )
+            if milestoneId != nil || startDate != nil {
+                try store.editTask(task.id) { t in
+                    // Only keep the milestone if the task landed in the same project.
+                    if let milestoneId, destination == defaultScope { t.milestoneId = milestoneId }
+                    if let startDate { t.startDate = startDate }
+                }
+            }
             selectedTaskId = task.id
+            return [task.id]
         }
     }
 
     func addSubtask(to parent: TaskItem, title: String) {
-        perform { try store.addTask(title: title, containerId: parent.containerId, parentTaskId: parent.id) }
+        undoable("Add Subtask", [parent.id]) { try store.addTask(title: title, containerId: parent.containerId, parentTaskId: parent.id) }
     }
 
     func addBlock(to task: TaskItem) {
         // Next full hour, one hour long.
         let cal = Calendar.current
         let start = cal.nextDate(after: Date(), matching: DateComponents(minute: 0), matchingPolicy: .nextTime) ?? Date()
-        perform { try store.addScheduleBlock(taskId: task.id, start: start, end: start.addingTimeInterval(3600)) }
+        undoable("Add Work Block", [task.id]) { try store.addScheduleBlock(taskId: task.id, start: start, end: start.addingTimeInterval(3600)) }
     }
 
     // Calendar
@@ -613,10 +843,11 @@ final class AppModel {
     }
 
     func createTaskWithBlock(title: String, containerId: UUID?, start: Date, end: Date) {
-        perform {
+        undoableCreating("New Task") {
             let task = try store.addTask(title: title, containerId: containerId)
             try store.addScheduleBlock(taskId: task.id, start: start, end: end)
             selectedTaskId = task.id
+            return [task.id]
         }
     }
 
@@ -644,11 +875,13 @@ final class AppModel {
     func deleteCalendarItems(_ items: [CalendarItem]) {
         var events: [ExternalEvent] = []
         var blockIds: [UUID] = []
+        var blockTaskIds: [UUID] = []
         var clearedDeadlines: [(UUID, LocalDate?, LocalTime?)] = []
         for item in items {
             switch item.source {
-            case .block(_, let blockId):
+            case .block(let taskId, let blockId):
                 blockIds.append(blockId)
+                blockTaskIds.append(taskId)
             case .deadline(let taskId):
                 let t = try? store.db.read { try TaskItem.fetchOne($0, id: taskId) }
                 clearedDeadlines.append((taskId, t?.dueDate, t?.dueTime))
@@ -659,28 +892,30 @@ final class AppModel {
                 if e.isWritable || (e.provider == .google && calendarWritable) { events.append(e) }
             }
         }
-        perform {
-            for id in blockIds { try store.deleteScheduleBlock(id) }
-            for (taskId, _, _) in clearedDeadlines { try store.editTask(taskId) { $0.dueDate = nil } }
-        }
         if !blockIds.isEmpty || !clearedDeadlines.isEmpty {
-            undoManager?.registerUndo(withTarget: self) { model in
-                MainActor.assumeIsolated {
-                    model.perform {
-                        for id in blockIds { try model.store.restoreScheduleBlock(id) }
-                        for (taskId, date, time) in clearedDeadlines {
-                            try model.store.editTask(taskId) { $0.dueDate = date; $0.dueTime = time }
-                        }
-                    }
-                }
+            undoable(blockIds.isEmpty ? "Clear Due Date" : "Delete Work Block", blockTaskIds + clearedDeadlines.map(\.0)) {
+                for id in blockIds { try store.deleteScheduleBlock(id) }
+                for (taskId, _, _) in clearedDeadlines { try store.editTask(taskId) { $0.dueDate = nil } }
             }
-            undoManager?.setActionName(blockIds.isEmpty ? "Clear Due Date" : "Delete Work Block")
         }
         if !events.isEmpty { pendingEventDelete = events }
     }
 
+    /// Move/resize a work block (calendar drag, inspector), undoable.
+    func updateBlock(_ blockId: UUID, start: Date, end: Date, coalesce: Bool = false) {
+        guard let block = try? store.db.read({ try ScheduleBlock.fetchOne($0, id: blockId) }) else { return }
+        undoable("Move Work Block", [block.taskId], coalesce: coalesce ? "block-\(blockId)" : nil) {
+            try store.updateScheduleBlock(blockId, start: start, end: end)
+        }
+    }
+
+    func deleteBlock(_ blockId: UUID) {
+        guard let block = try? store.db.read({ try ScheduleBlock.fetchOne($0, id: blockId) }) else { return }
+        undoable("Delete Work Block", [block.taskId]) { try store.deleteScheduleBlock(blockId) }
+    }
+
     func addBlock(to taskId: UUID, start: Date, end: Date) {
-        perform { try store.addScheduleBlock(taskId: taskId, start: start, end: end) }
+        undoable("Add Work Block", [taskId]) { try store.addScheduleBlock(taskId: taskId, start: start, end: end) }
         selectedTaskId = taskId
     }
 
@@ -799,6 +1034,11 @@ struct QuickAddRequest: Identifiable {
     let id = UUID()
     /// Prefilled due date (from double-clicking a week-strip day).
     var presetDue: LocalDate?
+    /// Where the task goes unless the text names a container (project views).
+    var presetContainer: UUID?
+    /// Project milestone the new task joins.
+    var presetMilestone: UUID?
+    var presetStart: LocalDate?
 }
 
 struct Toast: Identifiable {

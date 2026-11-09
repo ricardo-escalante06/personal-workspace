@@ -17,6 +17,8 @@ public struct TaskCategory: SyncRecord, Hashable {
     public var defaultSubtasks: JSONValue
     /// Global categories are offered everywhere; others only where enabled.
     public var isGlobal: Bool
+    /// Tasks with this tag appear in the Starred list automatically (Exam).
+    public var autoStar: Bool
     public var createdAt: Date
     public var updatedAt: Date
     public var deletedAt: Date?
@@ -24,27 +26,40 @@ public struct TaskCategory: SyncRecord, Hashable {
     public init(
         id: UUID = UUID(), ownerId: UUID? = nil, name: String, symbol: String = "circle",
         color: String? = nil, defaultDueTime: LocalTime? = nil, defaultEstimate: Int? = nil,
-        defaultSubtasks: JSONValue = .emptyArray, isGlobal: Bool = true,
+        defaultSubtasks: JSONValue = .emptyArray, isGlobal: Bool = true, autoStar: Bool = false,
         createdAt: Date = Date(), updatedAt: Date = Date(), deletedAt: Date? = nil
     ) {
         self.id = id; self.ownerId = ownerId; self.name = name; self.symbol = symbol
         self.color = color; self.defaultDueTime = defaultDueTime; self.defaultEstimate = defaultEstimate
-        self.defaultSubtasks = defaultSubtasks; self.isGlobal = isGlobal
+        self.defaultSubtasks = defaultSubtasks; self.isGlobal = isGlobal; self.autoStar = autoStar
         self.createdAt = createdAt; self.updatedAt = updatedAt; self.deletedAt = deletedAt
     }
 
-    /// Built-in categories created on first launch.
-    public static let builtIns: [(name: String, symbol: String, global: Bool)] = [
-        ("Homework", "doc.text", true),
-        ("Lab", "flask", true),
-        ("Quiz", "questionmark.circle", true),
-        ("Exam", "graduationcap", true),
-        ("Project", "hammer", true),
-        ("Reading", "book", true),
-        ("Study", "brain.head.profile", true),
-        ("Milestone", "diamond", false),
-        ("General", "circle", true),
+    /// Built-in tags created on first launch, with their default colors.
+    public static let builtIns: [(name: String, symbol: String, global: Bool, color: String)] = [
+        ("Homework", "doc.text", true, "steel"),
+        ("Lab", "flask", true, "green"),
+        ("Quiz", "questionmark.circle", true, "gold"),
+        ("Exam", "graduationcap", true, "rose"),
+        ("Project", "hammer", true, "violet"),
+        ("Reading", "book", true, "rust"),
+        ("Study", "brain.head.profile", true, "plum"),
+        ("Milestone", "diamond", false, "violet"),
+        ("General", "circle", true, "grey"),
     ]
+
+    /// Colors handed to new tags in turn.
+    public static let palette = ["steel", "green", "gold", "rose", "violet", "rust", "plum", "grey"]
+
+    /// Short label for tight spots (week chips, calendar blocks): "HW", "Quiz", "Exam".
+    public var shortName: String {
+        switch name.lowercased() {
+        case "homework": "HW"
+        case "reading": "Read"
+        case "milestone": "◆"
+        default: name.count > 8 ? String(name.prefix(7)) + "…" : name
+        }
+    }
 
     public enum CodingKeys: String, CodingKey, CaseIterable {
         case id
@@ -54,6 +69,7 @@ public struct TaskCategory: SyncRecord, Hashable {
         case defaultEstimate = "default_estimate"
         case defaultSubtasks = "default_subtasks"
         case isGlobal = "is_global"
+        case autoStar = "auto_star"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case deletedAt = "deleted_at"

@@ -6,7 +6,7 @@ import Foundation
 ///     → title "HW 5", container CS61B, due Friday 23:59, category Homework, priority 2
 ///
 /// Recognized tokens (anything else stays in the title):
-///  - `#cat`        category by name prefix or alias (hw, quiz, lab…)
+///  - `#tag`        tag by name prefix or alias (hw, quiz, lab…); an unknown name makes a new tag
 ///  - `!0`…`!3`     priority
 ///  - `@name`       container by name prefix; a bare course-code word (letters + digits)
 ///                  also matches a task-holding container with that exact name, e.g. `cs61b`
@@ -46,6 +46,8 @@ public struct QuickAddParser: Sendable {
         public var dueDate: LocalDate?
         public var dueTime: LocalTime?
         public var tokens: [Token]
+        /// `#name` that matched no tag: create a tag with this name.
+        public var newTagName: String? = nil
     }
 
     public var containers: [ContainerOption]
@@ -91,6 +93,15 @@ public struct QuickAddParser: Sendable {
                 result.categoryId = cat.id
                 result.tokens.append(Token(kind: .category, text: word, label: cat.name))
                 keep[i] = false; i += 1; continue
+            }
+            // #newtag: no match, so it becomes a new tag (letters, digits, - and _).
+            if lower.hasPrefix("#"), lower.count > 1, result.categoryId == nil, result.newTagName == nil {
+                let name = String(word.dropFirst()).trimmingCharacters(in: .punctuationCharacters.subtracting(["-", "_"]))
+                if !name.isEmpty, name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }) {
+                    result.newTagName = name
+                    result.tokens.append(Token(kind: .category, text: word, label: "New tag “\(name)”"))
+                    keep[i] = false; i += 1; continue
+                }
             }
             // !priority
             if lower.count == 2, lower.hasPrefix("!"), let p = Int(lower.dropFirst()), (0...3).contains(p) {

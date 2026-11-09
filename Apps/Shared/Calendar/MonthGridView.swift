@@ -8,6 +8,7 @@ struct MonthGridView: View {
     let month: Int
     let items: [CalendarItem]
     let colorFor: (CalendarItem) -> BlockStyle
+    var tagFor: (CalendarItem) -> TagStyle? = { _ in nil }
     let onPickDay: (LocalDate) -> Void
     let onSelect: (CalendarItem) -> Void
 
@@ -92,6 +93,7 @@ struct MonthGridView: View {
                     .foregroundStyle(WSColor.textTertiary)
             }
             Text(item.title).lineLimit(1).strikethrough(item.isDone)
+            if let tag = tagFor(item) { TagPill(tag, compact: true) }
             Spacer(minLength: 0)
         }
         .font(.system(size: 10.5, weight: .medium))

@@ -111,6 +111,8 @@ public struct CalendarItem: Identifiable, Sendable, Equatable {
     public var isEditable: Bool
     /// Time shown on deadline markers ("11:59 PM").
     public var dueTime: LocalTime?
+    /// The task's tag, for blocks and deadlines.
+    public var categoryId: UUID? = nil
 
     public var id: String {
         switch source {

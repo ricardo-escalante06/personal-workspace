@@ -69,6 +69,7 @@ struct CalendarView: View {
                     month: model.calendarAnchor.month,
                     items: items,
                     colorFor: style(for:),
+                    tagFor: { model.tagStyle($0.categoryId) },
                     onPickDay: { day in
                         model.calendarAnchor = day
                         model.calendarMode = .day
@@ -385,22 +386,25 @@ struct CalendarView: View {
             : [item]
         let shift = start.timeIntervalSince(item.start)
         var eventMoves: [PendingEventMove.Move] = []
+        let taskIds = group.compactMap(\.taskId)
+        let name = resized ? "Resize" : (group.count > 1 ? "Move \(group.count) Items" : "Move")
 
-        for target in group {
-            let newStart = target.id == item.id ? start : target.start.addingTimeInterval(shift)
-            let newEnd = target.id == item.id ? end : target.end.addingTimeInterval(shift)
-            switch target.source {
-            case .block(_, let blockId):
-                do { try model.store.updateScheduleBlock(blockId, start: newStart, end: newEnd) }
-                catch { model.errorMessage = error.localizedDescription }
-            case .deadline(let taskId):
-                let comps = Calendar.current.dateComponents([.hour, .minute], from: newStart)
-                model.editTask(taskId) { t in
-                    t.dueDate = LocalDate(newStart)
-                    if t.dueTime != nil { t.dueTime = LocalTime(hour: comps.hour ?? 0, minute: comps.minute ?? 0) }
+        model.undoable(name, taskIds) {
+            for target in group {
+                let newStart = target.id == item.id ? start : target.start.addingTimeInterval(shift)
+                let newEnd = target.id == item.id ? end : target.end.addingTimeInterval(shift)
+                switch target.source {
+                case .block(_, let blockId):
+                    try model.store.updateScheduleBlock(blockId, start: newStart, end: newEnd)
+                case .deadline(let taskId):
+                    let comps = Calendar.current.dateComponents([.hour, .minute], from: newStart)
+                    try model.store.editTask(taskId) { t in
+                        t.dueDate = LocalDate(newStart)
+                        if t.dueTime != nil { t.dueTime = LocalTime(hour: comps.hour ?? 0, minute: comps.minute ?? 0) }
+                    }
+                case .event(let event):
+                    eventMoves.append(.init(event: event, start: newStart, end: newEnd))
                 }
-            case .event(let event):
-                eventMoves.append(.init(event: event, start: newStart, end: newEnd))
             }
         }
         if !eventMoves.isEmpty {

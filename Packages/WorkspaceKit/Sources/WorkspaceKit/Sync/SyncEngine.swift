@@ -61,8 +61,12 @@ public struct SyncTable: Sendable {
         .of(ProjectMeta.self),
         .of(BoardColumn.self),
         .of(ContainerCategory.self),
-        // Parent tasks before subtasks.
-        .of(TaskItem.self, pushOrder: { ($0.parentTaskId == nil ? 0 : 1) < ($1.parentTaskId == nil ? 0 : 1) }),
+        .of(AssignmentRule.self),
+        // Parent tasks and milestones before the tasks that point at them.
+        .of(TaskItem.self, pushOrder: { a, b in
+            func level(_ t: TaskItem) -> Int { (t.parentTaskId == nil && t.milestoneId == nil) ? 0 : 1 }
+            return level(a) < level(b)
+        }),
         .of(ScheduleBlock.self),
         .of(OccurrenceOverride.self),
         .of(EventMappingRule.self),

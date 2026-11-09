@@ -47,8 +47,13 @@ struct QuickAddView: View {
                     TokenChip(symbol: "flag", text: WSFormat.relativeDay(date, today: LocalDate(Date()))
                                 + (result.dueTime.map { " " + WSFormat.time($0) } ?? ""))
                 }
-                if let id = result.categoryId, let c = model.category(id) {
-                    TokenChip(symbol: c.symbol, text: c.name)
+                if let tag = model.tagStyle(result.categoryId) {
+                    TagPill(tag)
+                } else if let name = result.newTagName {
+                    TokenChip(symbol: "tag", text: "New tag “\(name)”")
+                }
+                if let m = request.presetMilestone.flatMap(milestoneTitle) {
+                    TokenChip(symbol: "diamond", text: m)
                 }
                 if let p = result.priority {
                     TokenChip(symbol: "exclamationmark", text: "P\(p)")
@@ -69,20 +74,25 @@ struct QuickAddView: View {
     private func submit() {
         let result = parsed
         guard !result.title.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        model.createTask(from: result, defaultScope: scope)
+        model.createTask(from: result, defaultScope: request.presetContainer ?? scope,
+                         milestoneId: request.presetMilestone, startDate: request.presetStart)
         dismiss()
+    }
+
+    private func milestoneTitle(_ id: UUID) -> String? {
+        (try? model.store.db.read { try TaskItem.fetchOne($0, id: id) })?.title
     }
 
     private func destinationLabel(_ r: QuickAddParser.Result) -> String {
         if let id = r.containerId, let c = model.container(id) { return c.name }
-        guard let scope, let c = model.container(scope) else { return "Inbox" }
+        guard let scope = request.presetContainer ?? scope, let c = model.container(scope) else { return "Inbox" }
         if c.kind.holdsTasks { return c.name }
         if let list = c.defaultListId.flatMap({ model.container($0) }) { return "\(c.name) › \(list.name)" }
         return "\(c.name) › General"
     }
 
     private func destinationColor(_ r: QuickAddParser.Result) -> ContainerColor? {
-        let id = r.containerId ?? scope
+        let id = r.containerId ?? request.presetContainer ?? scope
         return model.container(id).map { ContainerColor(named: $0.color) }
     }
 }

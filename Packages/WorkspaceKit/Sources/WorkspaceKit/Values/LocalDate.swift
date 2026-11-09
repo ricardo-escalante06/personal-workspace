@@ -47,6 +47,12 @@ public struct LocalDate: Hashable, Comparable, Sendable, Codable, CustomStringCo
         return LocalDate(startOfDay(in: utc).addingTimeInterval(TimeInterval(days) * 86_400), in: utc)
     }
 
+    /// Whole days from this date to `other` (negative if `other` is earlier).
+    public func daysUntil(_ other: LocalDate) -> Int {
+        let utc = TimeZone(identifier: "UTC")!
+        return Int((other.startOfDay(in: utc).timeIntervalSince(startOfDay(in: utc)) / 86_400).rounded())
+    }
+
     public static func < (a: LocalDate, b: LocalDate) -> Bool {
         (a.year, a.month, a.day) < (b.year, b.month, b.day)
     }

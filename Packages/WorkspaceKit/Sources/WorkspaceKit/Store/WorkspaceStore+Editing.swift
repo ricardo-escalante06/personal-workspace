@@ -102,6 +102,17 @@ extension WorkspaceStore {
                     guard c.kind.holdsTasks else { throw WorkspaceError.taskInFolder }
                 }
                 t.boardColumnId = nil  // columns belong to the old project
+                t.milestoneId = nil    // so do milestones
+            }
+            // A start after the due date makes no sense (and the server rejects it).
+            if let start = t.startDate, let due = t.dueDate, start > due { t.startDate = due }
+            // Hand edits to a generated task stick when the series is edited later.
+            if t.generatedByRuleId != nil {
+                var detached = Set(t.detachedFields)
+                if t.title != before.title { detached.insert("title") }
+                if t.dueDate != before.dueDate || t.dueTime != before.dueTime { detached.insert("due") }
+                if t.categoryId != before.categoryId { detached.insert("category") }
+                t.detachedFields = detached.sorted()
             }
             try Self.save(&t, in: db)
         }
@@ -124,13 +135,54 @@ extension WorkspaceStore {
         try db.read { try TaskCategory.live().order(Column("name")).fetchAll($0) }
     }
 
-    /// Creates the built-in categories if none exist yet (first launch).
+    /// Creates the built-in tags on first launch; later launches give built-ins
+    /// created before tags had colors their default color (and Exam its auto-star).
     public func ensureBuiltInCategories() throws {
         try db.write { db in
-            guard try TaskCategory.live().fetchCount(db) == 0 else { return }
-            for (name, symbol, global) in TaskCategory.builtIns {
-                var c = TaskCategory(name: name, symbol: symbol, isGlobal: global)
+            let existing = try TaskCategory.live().fetchAll(db)
+            if existing.isEmpty {
+                for b in TaskCategory.builtIns {
+                    var c = TaskCategory(name: b.name, symbol: b.symbol, color: b.color, isGlobal: b.global,
+                                         autoStar: b.name == "Exam")
+                    try Self.save(&c, in: db)
+                }
+                return
+            }
+            for var c in existing where c.color == nil {
+                c.color = TaskCategory.builtIns.first { $0.name == c.name }?.color
+                    ?? TaskCategory.palette[c.name.unicodeScalars.reduce(0) { $0 + Int($1.value) } % TaskCategory.palette.count]
+                if c.name == "Exam" { c.autoStar = true }
                 try Self.save(&c, in: db)
+            }
+        }
+    }
+
+    /// The tag with this name (case-insensitive), creating it if needed — what `#newtag` does.
+    @discardableResult
+    public func tag(named rawName: String) throws -> TaskCategory {
+        let name = rawName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { throw WorkspaceError.invalidTitle }
+        return try db.write { db in
+            let all = try TaskCategory.live().fetchAll(db)
+            if let match = all.first(where: { $0.name.lowercased() == name.lowercased() }) { return match }
+            let color = TaskCategory.palette[all.count % TaskCategory.palette.count]
+            // "#errand" → "Errand"; keep the user's casing beyond the first letter.
+            let display = name.prefix(1).uppercased() + name.dropFirst()
+            var c = TaskCategory(name: display, symbol: "tag", color: color)
+            try Self.save(&c, in: db)
+            return c
+        }
+    }
+
+    /// Removes a tag; its tasks keep everything else and become untagged.
+    public func deleteTag(_ id: UUID) throws {
+        try db.write { db in
+            guard var c = try TaskCategory.live().filter(id: id).fetchOne(db) else { return }
+            c.deletedAt = Date()
+            try Self.save(&c, in: db)
+            for var t in try TaskItem.live().filter(Column("category_id") == id).fetchAll(db) {
+                t.categoryId = nil
+                try Self.save(&t, in: db)
             }
         }
     }

@@ -46,6 +46,15 @@ public struct TaskItem: SyncRecord, Hashable {
     /// Field names edited by hand on a generated task; series edits skip them.
     public var detachedFields: [String]
     public var completedAt: Date?
+    /// Shows in the dashboard's Starred list (also automatic for tags with `autoStar`).
+    public var isStarred: Bool
+    /// When work starts; with `dueDate` it gives the task a span on the project timeline.
+    public var startDate: LocalDate?
+    /// A project milestone (phase). Other tasks join it through `milestoneId`.
+    public var isMilestone: Bool
+    public var milestoneId: UUID?
+    /// Position in its assignment series (`generatedByRuleId`), 0-based.
+    public var seriesIndex: Int?
     public var createdAt: Date
     public var updatedAt: Date
     public var deletedAt: Date?
@@ -75,6 +84,11 @@ public struct TaskItem: SyncRecord, Hashable {
         templateOriginId: UUID? = nil,
         detachedFields: [String] = [],
         completedAt: Date? = nil,
+        isStarred: Bool = false,
+        startDate: LocalDate? = nil,
+        isMilestone: Bool = false,
+        milestoneId: UUID? = nil,
+        seriesIndex: Int? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         deletedAt: Date? = nil
@@ -103,6 +117,11 @@ public struct TaskItem: SyncRecord, Hashable {
         self.templateOriginId = templateOriginId
         self.detachedFields = detachedFields
         self.completedAt = completedAt
+        self.isStarred = isStarred
+        self.startDate = startDate
+        self.isMilestone = isMilestone
+        self.milestoneId = milestoneId
+        self.seriesIndex = seriesIndex
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.deletedAt = deletedAt
@@ -144,6 +163,11 @@ public struct TaskItem: SyncRecord, Hashable {
         case templateOriginId = "template_origin_id"
         case detachedFields = "detached_fields"
         case completedAt = "completed_at"
+        case isStarred = "is_starred"
+        case startDate = "start_date"
+        case isMilestone = "is_milestone"
+        case milestoneId = "milestone_id"
+        case seriesIndex = "series_index"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case deletedAt = "deleted_at"

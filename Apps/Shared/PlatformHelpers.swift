@@ -70,3 +70,24 @@ struct KeyDownCatcher: NSViewRepresentable {
     }
 }
 #endif
+
+/// Keyboard modifiers held right now (for ⌘-click / ⇧-click selection).
+enum Platform {
+    struct Modifiers: OptionSet {
+        let rawValue: Int
+        static let command = Modifiers(rawValue: 1)
+        static let shift = Modifiers(rawValue: 2)
+    }
+
+    @MainActor static var modifierFlags: Modifiers {
+        #if os(macOS)
+        let flags = NSEvent.modifierFlags
+        var out: Modifiers = []
+        if flags.contains(.command) { out.insert(.command) }
+        if flags.contains(.shift) { out.insert(.shift) }
+        return out
+        #else
+        return []
+        #endif
+    }
+}

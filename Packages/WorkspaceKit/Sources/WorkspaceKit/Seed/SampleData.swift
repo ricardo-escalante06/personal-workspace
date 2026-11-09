@@ -37,12 +37,12 @@ public enum SampleData {
 
         // Categories
         var categories: [String: UUID] = [:]
-        for (name, symbol, global) in TaskCategory.builtIns {
+        for (name, symbol, global, color) in TaskCategory.builtIns {
             if let existing = try TaskCategory.live().filter(Column("name") == name).fetchOne(db) {
                 categories[name] = existing.id
                 continue
             }
-            var c = TaskCategory(name: name, symbol: symbol, isGlobal: global)
+            var c = TaskCategory(name: name, symbol: symbol, color: color, isGlobal: global, autoStar: name == "Exam")
             try WorkspaceStore.save(&c, in: db)
             categories[name] = c.id
         }

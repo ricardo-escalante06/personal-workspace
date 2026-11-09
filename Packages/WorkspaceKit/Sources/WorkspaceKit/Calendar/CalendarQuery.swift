@@ -40,7 +40,7 @@ public enum CalendarQuery {
             items.append(CalendarItem(
                 source: .block(taskId: t.id, blockId: b.id), title: t.title,
                 start: b.startsAt, end: b.endsAt, isAllDay: false, containerId: t.containerId,
-                isDone: t.status == .done, isTentative: false, isEditable: true, dueTime: nil
+                isDone: t.status == .done, isTentative: false, isEditable: true, dueTime: nil, categoryId: t.categoryId
             ))
         }
 
@@ -55,14 +55,14 @@ public enum CalendarQuery {
                         source: .deadline(taskId: t.id), title: t.title,
                         start: instant, end: instant.addingTimeInterval(options.timedDeadlineLength),
                         isAllDay: false, containerId: t.containerId, isDone: t.status == .done,
-                        isTentative: false, isEditable: true, dueTime: t.dueTime
+                        isTentative: false, isEditable: true, dueTime: t.dueTime, categoryId: t.categoryId
                     ))
                 } else {
                     items.append(CalendarItem(
                         source: .deadline(taskId: t.id), title: t.title,
                         start: due.startOfDay(in: timeZone), end: due.adding(days: 1).startOfDay(in: timeZone),
                         isAllDay: true, containerId: t.containerId, isDone: t.status == .done,
-                        isTentative: false, isEditable: true, dueTime: nil
+                        isTentative: false, isEditable: true, dueTime: nil, categoryId: t.categoryId
                     ))
                 }
             }

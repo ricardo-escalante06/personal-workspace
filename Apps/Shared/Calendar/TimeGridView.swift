@@ -172,6 +172,7 @@ struct TimeGridView: View {
                     .foregroundStyle(style.accent)
             }
             Text(item.title).strikethrough(item.isDone).lineLimit(1)
+            if let tag = model.tagStyle(item.categoryId) { TagPill(tag, compact: true) }
             Spacer(minLength: 0)
         }
         .font(.system(size: 11, weight: .medium))
@@ -320,7 +321,7 @@ struct TimeGridView: View {
         let shift = snap(dy) + snapDays(dx, columnWidth) * 86_400
 
         return GridBlockView(
-            item: p.item, style: style,
+            item: p.item, style: style, tag: model.tagStyle(p.item.categoryId),
             timeText: p.item.isDeadline
                 ? "due \(WSFormat.time(p.item.start.addingTimeInterval(shift), in: tz))"
                 : WSFormat.range(p.item.start.addingTimeInterval(shift), p.item.end.addingTimeInterval(shift + snap(extra)), in: tz),
@@ -479,6 +480,7 @@ private struct GridBackground: View {
 struct GridBlockView: View {
     let item: CalendarItem
     let style: BlockStyle
+    var tag: TagStyle? = nil
     let timeText: String
     let isPast: Bool
     let isSelected: Bool
@@ -511,10 +513,13 @@ struct GridBlockView: View {
                 }
                 .foregroundStyle(WSColor.textPrimary)
                 if !compact {
-                    Text(timeText)
-                        .font(WSFont.blockMeta)
-                        .foregroundStyle(WSColor.textSecondary)
-                        .lineLimit(1)
+                    HStack(spacing: 4) {
+                        if let tag { TagPill(tag, compact: true) }
+                        Text(timeText)
+                            .font(WSFont.blockMeta)
+                            .foregroundStyle(WSColor.textSecondary)
+                            .lineLimit(1)
+                    }
                 }
             }
             .padding(.horizontal, 6)

@@ -94,6 +94,6 @@ private func d(_ m: Int, _ day: Int, _ y: Int = 2026) -> LocalDate { LocalDate(y
         #expect(parser.parse("x #midterm").categoryId == exam)
         #expect(parser.parse("x #qu").categoryId == quiz)
         #expect(parser.parse("x #nope").categoryId == nil)
-        #expect(parser.parse("x #nope").title == "x #nope")   // unmatched tags stay in the title
+        #expect(parser.parse("x #nope").newTagName == "nope")  // unknown tags become new tags   // unmatched tags stay in the title
     }
 }

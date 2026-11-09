@@ -51,17 +51,15 @@ struct InboxView: View {
                             task: task,
                             context: .init(
                                 color: .grey,
-                                categorySymbol: model.category(task.categoryId)?.symbol,
+                                tag: model.tagStyle(task.categoryId),
+                                isStarred: model.isStarred(task),
                                 dueText: WSFormat.due(task, today: today),
                                 isOverdue: task.dueDate.map { $0 < today } ?? false
                             ),
-                            isSelected: model.selectedTaskId == task.id,
+                            isSelected: model.isSelected(task.id),
                             onToggle: { model.toggleDone(task) }
                         )
-                        .onTapGesture(count: 2) { model.openDetails(task.id) }
-                        .simultaneousGesture(TapGesture().onEnded { model.select(task.id) })
-                        .contextMenu { TaskContextMenu(task: task) }
-                        .draggable("due-\(task.id.uuidString)")
+                        .taskInteractions(task, order: visible.map(\.id))
                     }
                 }
                 Toggle("Show completed", isOn: $showCompleted)

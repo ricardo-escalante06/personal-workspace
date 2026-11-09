@@ -16,6 +16,9 @@ struct TaskInspector: View {
     @State private var titleDraft = ""
     @State private var notesDraft = ""
     @State private var newSubtask = ""
+    @State private var milestones: [TaskItem] = []
+    @State private var showNewTag = false
+    @State private var newTagName = ""
     @FocusState private var titleFocused: Bool
 
     var body: some View {
@@ -31,14 +34,18 @@ struct TaskInspector: View {
 
     private func observe() async {
         let id = taskId
-        let observation = ValueObservation.tracking { db -> (TaskItem?, [ScheduleBlock], [TaskItem]) in
+        let observation = ValueObservation.tracking { db -> (TaskItem?, [ScheduleBlock], [TaskItem], [TaskItem]) in
             let task = try TaskItem.live().filter(id: id).fetchOne(db)
             let blocks = try ScheduleBlock.live().filter(Column("task_id") == id).order(Column("starts_at")).fetchAll(db)
             let subtasks = try TaskItem.live().filter(Column("parent_task_id") == id).order(Column("sort_rank")).fetchAll(db)
-            return (task, blocks, subtasks)
+            let milestones = try TaskItem.live()
+                .filter(Column("container_id") == task?.containerId && Column("is_milestone") == true)
+                .order(Column("due_date"), Column("sort_rank")).fetchAll(db)
+            return (task, blocks, subtasks, milestones)
         }
         do {
-            for try await (t, b, s) in observation.values(in: model.store.db) {
+            for try await (t, b, s, m) in observation.values(in: model.store.db) {
+                milestones = m
                 // Don't clobber text the user is typing.
                 if !titleFocused { titleDraft = t?.title ?? "" }
                 if task?.id != t?.id { notesDraft = t?.notes ?? "" }
@@ -71,10 +78,29 @@ struct TaskInspector: View {
                     Text("Done").tag(TaskStatus.done)
                     Text("Cancelled").tag(TaskStatus.cancelled)
                 }
-                Picker("Category", selection: binding(\.categoryId)) {
-                    Text("None").tag(UUID?.none)
-                    ForEach(model.categories) { c in
-                        Label(c.name, systemImage: c.symbol).tag(UUID?.some(c.id))
+                HStack {
+                    Picker("Tag", selection: binding(\.categoryId)) {
+                        Text("None").tag(UUID?.none)
+                        ForEach(model.categories) { c in
+                            Text(c.name).tag(UUID?.some(c.id))
+                        }
+                    }
+                    Button { newTagName = ""; showNewTag = true } label: { Image(systemName: "plus") }
+                        .buttonStyle(.borderless)
+                        .help("New tag")
+                }
+                .alert("New Tag", isPresented: $showNewTag) {
+                    TextField("Name", text: $newTagName)
+                    Button("Add") { model.applyNewTag(newTagName, to: task.id) }
+                    Button("Cancel", role: .cancel) {}
+                }
+                Toggle(isOn: binding(\.isStarred)) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Starred")
+                        if !task.isStarred, let c = model.category(task.categoryId), c.autoStar {
+                            Text("Starred automatically: \(c.name) tag")
+                                .font(.caption).foregroundStyle(WSColor.textTertiary)
+                        }
                     }
                 }
                 Picker("Priority", selection: binding(\.priority)) {
@@ -91,7 +117,29 @@ struct TaskInspector: View {
                 }
             }
 
-            Section("Deadline") {
+            if model.container(task.containerId)?.kind == .project {
+                Section("Project") {
+                    Toggle("This is a milestone", isOn: binding(\.isMilestone))
+                    if !task.isMilestone {
+                        Picker("Milestone", selection: binding(\.milestoneId)) {
+                            Text("None").tag(UUID?.none)
+                            ForEach(milestones) { m in Text(m.title).tag(UUID?.some(m.id)) }
+                        }
+                    }
+                }
+            }
+
+            Section("Dates") {
+                Toggle("Start date", isOn: Binding(
+                    get: { task.startDate != nil },
+                    set: { on in model.editTask(task.id) { $0.startDate = on ? (task.dueDate.map { min($0, LocalDate(Date())) } ?? LocalDate(Date())) : nil } }
+                ))
+                if let start = task.startDate {
+                    DatePicker("Starts", selection: Binding(
+                        get: { start.startOfDay(in: .current) },
+                        set: { d in model.editTask(task.id) { $0.startDate = LocalDate(d) } }
+                    ), displayedComponents: .date)
+                }
                 Toggle("Due date", isOn: Binding(
                     get: { task.dueDate != nil },
                     set: { on in model.editTask(task.id) { $0.dueDate = on ? LocalDate(Date()) : nil } }
@@ -164,7 +212,7 @@ struct TaskInspector: View {
                 }
                 TextField("Link", text: Binding(
                     get: { task.sourceUrl ?? "" },
-                    set: { v in model.editTask(task.id) { $0.sourceUrl = v.isEmpty ? nil : v } }
+                    set: { v in model.editTask(task.id, typing: "Link") { $0.sourceUrl = v.isEmpty ? nil : v } }
                 ))
             }
 
@@ -174,7 +222,7 @@ struct TaskInspector: View {
                     .frame(minHeight: 90)
                     .onChange(of: notesDraft) { _, value in
                         guard value != task.notes else { return }
-                        model.editTask(task.id) { $0.notes = value }
+                        model.editTask(task.id, typing: "Notes") { $0.notes = value }
                     }
             }
 
@@ -191,7 +239,7 @@ struct TaskInspector: View {
         guard let task, titleDraft != task.title,
               !titleDraft.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         let value = titleDraft
-        model.editTask(task.id) { $0.title = value }
+        model.editTask(task.id, typing: "Title") { $0.title = value }
     }
 
     /// A binding to one field that writes through the store.
@@ -218,18 +266,18 @@ private struct BlockEditor: View {
                 get: { block.startsAt },
                 set: { start in
                     let length = block.endsAt.timeIntervalSince(block.startsAt)
-                    try? model.store.updateScheduleBlock(block.id, start: start, end: start.addingTimeInterval(length))
+                    model.updateBlock(block.id, start: start, end: start.addingTimeInterval(length), coalesce: true)
                 }
             ))
             .labelsHidden()
             Text("–").foregroundStyle(WSColor.textTertiary)
             DatePicker("", selection: Binding(
                 get: { block.endsAt },
-                set: { end in try? model.store.updateScheduleBlock(block.id, start: block.startsAt, end: end) }
+                set: { end in model.updateBlock(block.id, start: block.startsAt, end: end, coalesce: true) }
             ), displayedComponents: .hourAndMinute)
             .labelsHidden()
             Spacer()
-            Button { try? model.store.deleteScheduleBlock(block.id) } label: { Image(systemName: "trash") }
+            Button { model.deleteBlock(block.id) } label: { Image(systemName: "trash") }
                 .buttonStyle(.borderless)
                 .foregroundStyle(WSColor.textTertiary)
         }
