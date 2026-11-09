@@ -159,7 +159,7 @@ struct ClassScheduleEditor: View {
 
     private func timePicker(_ time: Binding<LocalTime>) -> some View {
         DatePicker("", selection: Binding(
-            get: { LocalDate(Date()).startOfDay(in: .current).addingTimeInterval(TimeInterval(time.wrappedValue.secondsSinceMidnight)) },
+            get: { LocalDate(Date()).at(time.wrappedValue) },
             set: { d in
                 let c = Calendar.current.dateComponents([.hour, .minute], from: d)
                 time.wrappedValue = LocalTime(hour: c.hour ?? 0, minute: c.minute ?? 0)
@@ -217,7 +217,7 @@ extension AppModel {
                 guard let firstDay = (0..<7).map({ termStartDay.adding(days: $0) }).first(where: {
                     m.weekdays.contains(weekdayCalendar.component(.weekday, from: $0.startOfDay(in: tz)))
                 }) else { continue }
-                let start = firstDay.startOfDay(in: tz).addingTimeInterval(TimeInterval(m.start.secondsSinceMidnight))
+                let start = firstDay.at(m.start, in: tz)
                 let duration = TimeInterval(max(m.end.secondsSinceMidnight - m.start.secondsSinceMidnight, 15 * 60))
                 let type = m.type.trimmingCharacters(in: .whitespaces)
                 try await source.createWeekly(

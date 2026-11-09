@@ -150,6 +150,7 @@ final class AppModel {
         if ProcessInfo.processInfo.arguments.contains("--calendar") { selection = .calendar }
         try? store.ensureBuiltInCategories()
         try? store.pruneOrphanedRecords()
+        convertImportedRepeats()
         observe()
         Task { await restoreSession() }
     }
@@ -728,14 +729,17 @@ final class AppModel {
     func deleteTasks(_ ids: [UUID]) {
         guard !ids.isEmpty else { return }
         let title = ids.count == 1
-            ? "“\((try? store.db.read { try TaskItem.fetchOne($0, id: ids[0]) })?.title ?? "Task")”"
+            ? "“\((try? store.db.read { try TaskItem.fetchOne($0, id: OccurrenceRegistry.shared.resolve(ids[0])?.series ?? ids[0]) })?.title ?? "Task")”"
             : "\(ids.count) Tasks"
-        undoable("Delete \(title)", ids) {
+        // Deleting an occurrence of a repeating task skips just that one.
+        let allOccurrences = ids.allSatisfy { OccurrenceRegistry.shared.resolve($0) != nil }
+        undoable("\(allOccurrences ? "Skip" : "Delete") \(title)", ids) {
             for id in ids { try store.deleteTask(id) }
         }
         if selectedTaskIds.contains(where: ids.contains) { clearSelection() }
-        if ids.count > 1 {
-            showToast(Toast(message: "Deleted \(ids.count) tasks", undo: { [weak self] in self?.undoManager?.undo() }))
+        if ids.count > 1 || allOccurrences {
+            let what = allOccurrences ? (ids.count == 1 ? "Skipped \(title)" : "Skipped \(ids.count)") : "Deleted \(ids.count) tasks"
+            showToast(Toast(message: what, undo: { [weak self] in self?.undoManager?.undo() }))
         }
     }
 
@@ -788,6 +792,7 @@ final class AppModel {
                     if let startDate { t.startDate = startDate }
                 }
             }
+            if let rule = parsed.repeatRule { try store.setRepeat(task.id, rule) }
             selectedTaskId = task.id
             return [task.id]
         }

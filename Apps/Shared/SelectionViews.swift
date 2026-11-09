@@ -57,8 +57,15 @@ struct TaskContextMenu: View {
             Button("Open Details") { model.openDetails(task.id) }
             TaskEditMenus(ids: [task.id])
             Button(task.isStarred ? "Unstar" : "Star") { model.toggleStar(task) }
-            Divider()
-            Button("Delete", role: .destructive) { model.deleteTask(task.id) }
+            if task.isOccurrence {
+                Divider()
+                Button("Skip This One") { model.deleteTask(task.id) }
+                Button("Stop Repeating") { model.setRepeat(task, nil) }
+                Button("Delete Repeating Task", role: .destructive) { if let s = task.occurrenceOf { model.deleteTask(s) } }
+            } else {
+                Divider()
+                Button("Delete", role: .destructive) { model.deleteTask(task.id) }
+            }
         }
     }
 }

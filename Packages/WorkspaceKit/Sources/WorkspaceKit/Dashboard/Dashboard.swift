@@ -114,8 +114,11 @@ public enum Dashboard {
         let rangeEnd = max(weekStart.adding(days: 7), today.adding(days: 8)).startOfDay(in: timeZone)
         let blocks = try ScopeQuery.scheduleBlocks(in: scope, from: rangeStart, to: rangeEnd).fetchAll(db)
         let autoStar = Set(try TaskCategory.live().filter(Column("auto_star") == true).fetchAll(db).map(\.id))
+        let seriesIds = tasks.filter(\.isRecurring).map(\.id)
+        let overrides = seriesIds.isEmpty ? [] :
+            try OccurrenceOverride.live().filter(seriesIds.contains(Column("task_id"))).fetchAll(db)
         return build(tasks: tasks, blocks: blocks, weekStart: weekStart, now: now, timeZone: timeZone,
-                     autoStarCategories: autoStar)
+                     autoStarCategories: autoStar, overrides: overrides)
     }
 
     public static func build(
@@ -124,13 +127,40 @@ public enum Dashboard {
         weekStart: LocalDate,
         now: Date,
         timeZone: TimeZone,
-        autoStarCategories: Set<UUID> = []
+        autoStarCategories: Set<UUID> = [],
+        overrides: [OccurrenceOverride] = []
     ) -> DashboardData {
         let today = LocalDate(now, in: timeZone)
-        let liveTasks = allTasks.filter { $0.deletedAt == nil && $0.status != .cancelled }
-        let byId = Dictionary(uniqueKeysWithValues: liveTasks.map { ($0.id, $0) })
-        let blocksByTask = Dictionary(grouping: blocks.filter { $0.deletedAt == nil && byId[$0.taskId] != nil }, by: \.taskId)
         func day(of date: Date) -> LocalDate { LocalDate(date, in: timeZone) }
+        let seriesList = allTasks.filter { $0.isRecurring && $0.deletedAt == nil && $0.status != .cancelled }
+        // Repeating tasks become their occurrences: missed ones from the last 30 days
+        // (they stay overdue until done or skipped) through the visible week and Due soon.
+        let windowStart = min(today.adding(days: -30), weekStart)
+        let windowEnd = max(weekStart.adding(days: 6), today.adding(days: 14))
+        let expanded = Occurrences.expandAll(allTasks, overrides: overrides, from: windowStart, through: windowEnd)
+        let liveTasks = expanded.filter { $0.deletedAt == nil && $0.status != .cancelled }
+        var byId = Dictionary(liveTasks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for s in seriesList { byId[s.id] = s }
+        // Work blocks: a repeating task's block goes with its occurrence (by key, or by day).
+        var blocksByTask: [UUID: [ScheduleBlock]] = [:]
+        let instancesBySeries = Dictionary(grouping: liveTasks.filter(\.isOccurrence), by: { $0.occurrenceOf! })
+        for b in blocks where b.deletedAt == nil && byId[b.taskId] != nil {
+            if let instances = instancesBySeries[b.taskId] {
+                let match = instances.first { $0.occurrenceKey == b.occurrenceKey }
+                    ?? instances.first { b.occurrenceKey == nil && $0.dueDate == day(of: b.startsAt) }
+                if let match { blocksByTask[match.id, default: []].append(b) }
+            } else if byId[b.taskId]?.isRecurring == false {
+                blocksByTask[b.taskId, default: []].append(b)
+            }
+        }
+        let currentBySeries: [UUID: TaskItem] = Dictionary(uniqueKeysWithValues: seriesList.compactMap { s in
+            Occurrences.current(s, overrides: overrides.filter { $0.taskId == s.id }, today: today).map { (s.id, $0) }
+        })
+        /// Lists that show what's next (Due soon, Starred) show one occurrence per series.
+        func firstPerSeries(_ list: [TaskItem]) -> [TaskItem] {
+            var seen = Set<UUID>()
+            return list.filter { t in t.occurrenceOf.map { seen.insert($0).inserted } ?? true }
+        }
 
         // Subtasks roll up into their parent.
         var subtaskProgress: [UUID: SubtaskProgress] = [:]
@@ -141,7 +171,10 @@ public enum Dashboard {
             if t.status == .done { p.done += 1 }
             subtaskProgress[parent] = p
         }
-        let topLevel = liveTasks.filter { $0.parentTaskId == nil || byId[$0.parentTaskId!] == nil }
+        for t in liveTasks where t.isOccurrence { subtaskProgress[t.id] = subtaskProgress[t.occurrenceOf!] }
+        // Task lists: one row per repeating task (its current occurrence).
+        let topLevel = liveTasks.filter { !$0.isOccurrence && ($0.parentTaskId == nil || byId[$0.parentTaskId!] == nil) }
+            + seriesList.compactMap { s in s.parentTaskId == nil ? currentBySeries[s.id] : nil }
 
         // Today: one row per task, however many blocks it has.
         var todayItems: [TodayItem] = []
@@ -196,17 +229,17 @@ public enum Dashboard {
         }
 
         let dueSoonEnd = today.adding(days: 14)
-        let dueSoon = liveTasks
+        let dueSoon = firstPerSeries(liveTasks
             .filter { t in !t.status.isClosed && (t.dueDate.map { $0 > today && $0 <= dueSoonEnd } ?? false) }
             .sorted { a, b in
                 if a.dueDate != b.dueDate { return a.dueDate! < b.dueDate! }
                 let at = a.dueTime?.secondsSinceMidnight ?? -1, bt = b.dueTime?.secondsSinceMidnight ?? -1
                 if at != bt { return at < bt }
                 return a.title.localizedStandardCompare(b.title) == .orderedAscending
-            }
+            })
 
         // Starred (or auto-starred, like Exam) and due in the same two weeks as Due soon.
-        let starred = liveTasks
+        let starred = firstPerSeries(liveTasks
             .filter { t in
                 !t.status.isClosed && (t.isStarred || t.categoryId.map(autoStarCategories.contains) == true)
                     && (t.dueDate.map { $0 >= today && $0 <= dueSoonEnd } ?? false)
@@ -214,7 +247,7 @@ public enum Dashboard {
             .sorted { a, b in
                 if a.dueDate != b.dueDate { return a.dueDate! < b.dueDate! }
                 return a.title.localizedStandardCompare(b.title) == .orderedAscending
-            }
+            })
 
         // Week strip.
         var week: [WeekDay] = []
@@ -251,7 +284,7 @@ public enum Dashboard {
         m.dueToday = liveTasks.filter { $0.dueDate == today && !$0.status.isClosed }.count
         m.scheduledToday = Set(todayItems.filter { !$0.blocks.isEmpty && !$0.task.status.isClosed }.map(\.id)).count
         m.overdue = overdue.count
-        m.next7Days = Set(upcoming.map(\.task.id)).count
+        m.next7Days = Set(upcoming.map { $0.task.occurrenceOf ?? $0.task.id }).count
         m.completedToday = liveTasks.filter { $0.completedAt.map { day(of: $0) == today } ?? false }.count
         let countable = topLevel
         m.progress = countable.isEmpty ? 0 : Double(countable.filter { $0.status == .done }.count) / Double(countable.count)

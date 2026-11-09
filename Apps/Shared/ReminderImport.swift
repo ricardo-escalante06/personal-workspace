@@ -236,3 +236,22 @@ extension AppModel {
         }
     }
 }
+
+extension AppModel {
+    /// Reminders imported before repeating tasks existed carry a note saying they repeat
+    /// weekly; turn those into real weekly tasks (once) and drop the note.
+    func convertImportedRepeats() {
+        let marker = "Repeats weekly (from Reminders) — will become a repeating task in Milestone 4."
+        guard let tasks = try? store.db.read({ db in
+            try TaskItem.live().filter(Column("notes").like("%will become a repeating task in Milestone 4%")).fetchAll(db)
+        }), !tasks.isEmpty else { return }
+        perform {
+            for t in tasks where !t.isRecurring {
+                let day = RepeatRule.weekday(t.dueDate ?? LocalDate(Date()))
+                try store.setRepeat(t.id, RepeatRule(.weekly, weekdays: [day]))
+                try store.editTask(t.id) { $0.notes = $0.notes.replacingOccurrences(of: marker, with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines) }
+            }
+        }
+    }
+}

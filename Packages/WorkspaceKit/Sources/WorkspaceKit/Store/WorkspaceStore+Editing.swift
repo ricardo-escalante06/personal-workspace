@@ -81,6 +81,9 @@ extension WorkspaceStore {
     /// Edits task fields through the outbox. Keeps `completedAt` consistent with
     /// status and the due time zone consistent with the due time.
     public func editTask(_ id: UUID, timeZone: TimeZone = .current, _ change: (inout TaskItem) throws -> Void) throws {
+        if let occ = OccurrenceRegistry.shared.resolve(id) {
+            return try editOccurrence(occ.series, key: occ.key, timeZone: timeZone, change)
+        }
         try db.write { db in
             guard var t = try TaskItem.live().filter(id: id).fetchOne(db) else {
                 throw WorkspaceError.notFound("Task")
@@ -104,6 +107,8 @@ extension WorkspaceStore {
                 t.boardColumnId = nil  // columns belong to the old project
                 t.milestoneId = nil    // so do milestones
             }
+            // Moving a repeating task's date moves where its repeats start.
+            if t.isRecurring, t.dueDate != before.dueDate, let d = t.dueDate { t.rruleAnchor = d }
             // A start after the due date makes no sense (and the server rejects it).
             if let start = t.startDate, let due = t.dueDate, start > due { t.startDate = due }
             // Hand edits to a generated task stick when the series is edited later.

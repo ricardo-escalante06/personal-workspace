@@ -29,14 +29,26 @@ public enum CalendarQuery {
     ) throws -> [CalendarItem] {
         var items: [CalendarItem] = []
 
-        let tasks = try ScopeQuery.tasks(in: scope).fetchAll(db)
+        let stored = try ScopeQuery.tasks(in: scope).fetchAll(db)
             .filter { $0.status != .cancelled }
-        let taskById = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0) })
+        let seriesById = Dictionary(uniqueKeysWithValues: stored.filter(\.isRecurring).map { ($0.id, $0) })
+        let overrides = seriesById.isEmpty ? [] :
+            try OccurrenceOverride.live().filter(Array(seriesById.keys).contains(Column("task_id"))).fetchAll(db)
+        // Repeating tasks show each occurrence in the range.
+        let firstDay = LocalDate(start, in: timeZone), lastDay = LocalDate(end.addingTimeInterval(-1), in: timeZone)
+        let tasks = Occurrences.expandAll(stored, overrides: overrides, from: firstDay, through: lastDay)
+        let taskById = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
 
         // Work blocks
         let blocks = try ScopeQuery.scheduleBlocks(in: scope, from: start, to: end).fetchAll(db)
         for b in blocks {
-            guard let t = taskById[b.taskId] else { continue }
+            var task = taskById[b.taskId]
+            if let series = seriesById[b.taskId] {
+                // A repeating task's block shows under its occurrence's title and done state.
+                let key = b.occurrenceKey ?? LocalDate(b.startsAt, in: timeZone).description
+                task = taskById[OccurrenceRegistry.id(series: series.id, key: key)] ?? series
+            }
+            guard let t = task else { continue }
             items.append(CalendarItem(
                 source: .block(taskId: t.id, blockId: b.id), title: t.title,
                 start: b.startsAt, end: b.endsAt, isAllDay: false, containerId: t.containerId,

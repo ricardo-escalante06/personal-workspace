@@ -82,6 +82,12 @@ public struct TaskRowView: View {
                         .foregroundStyle(done ? WSColor.textTertiary : WSColor.textPrimary)
                         .lineLimit(1)
                     if let tag = context.tag { TagPill(tag).opacity(done ? 0.5 : 1) }
+                    if task.isRecurring {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(WSColor.textTertiary)
+                            .accessibilityLabel("Repeats")
+                    }
                     if context.isStarred {
                         Image(systemName: "star.fill")
                             .font(.system(size: 9))

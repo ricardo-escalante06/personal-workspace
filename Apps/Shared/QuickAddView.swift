@@ -47,6 +47,9 @@ struct QuickAddView: View {
                     TokenChip(symbol: "flag", text: WSFormat.relativeDay(date, today: LocalDate(Date()))
                                 + (result.dueTime.map { " " + WSFormat.time($0) } ?? ""))
                 }
+                if let rule = result.repeatRule {
+                    TokenChip(symbol: "arrow.triangle.2.circlepath", text: rule.summary(anchor: result.dueDate))
+                }
                 if let tag = model.tagStyle(result.categoryId) {
                     TagPill(tag)
                 } else if let name = result.newTagName {

@@ -303,6 +303,9 @@ public final class WorkspaceStore: Sendable {
     }
 
     public func setStatus(_ taskId: UUID, _ status: TaskStatus) throws {
+        if let occ = OccurrenceRegistry.shared.resolve(taskId) {
+            return try setOccurrenceStatus(occ.series, key: occ.key, status)
+        }
         try update(TaskItem.self, taskId) { t in
             t.status = status
             t.completedAt = status == .done ? (t.completedAt ?? Date()) : nil
@@ -326,7 +329,11 @@ public final class WorkspaceStore: Sendable {
         }
     }
 
+    /// Deleting one occurrence of a repeating task skips it (the series stays).
     public func deleteTask(_ taskId: UUID) throws {
+        if let occ = OccurrenceRegistry.shared.resolve(taskId) {
+            return try skipOccurrence(occ.series, key: occ.key)
+        }
         try db.write { db in
             let now = Date()
             let tasks = try TaskItem.live()
@@ -346,11 +353,15 @@ public final class WorkspaceStore: Sendable {
 
     @discardableResult
     public func addScheduleBlock(taskId: UUID, start: Date, end: Date) throws -> ScheduleBlock {
-        try db.write { db in
+        // A block for one occurrence belongs to the series, tagged with that occurrence.
+        let occ = OccurrenceRegistry.shared.resolve(taskId)
+        let taskId = occ?.series ?? taskId
+        return try db.write { db in
             guard try TaskItem.live().filter(id: taskId).fetchOne(db) != nil else {
                 throw WorkspaceError.notFound("Task")
             }
-            var block = ScheduleBlock(taskId: taskId, startsAt: start, endsAt: max(end, start.addingTimeInterval(60)))
+            var block = ScheduleBlock(taskId: taskId, startsAt: start, endsAt: max(end, start.addingTimeInterval(60)),
+                                      occurrenceKey: occ?.key)
             try Self.save(&block, in: db)
             return block
         }

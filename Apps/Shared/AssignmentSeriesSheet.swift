@@ -102,7 +102,7 @@ struct AssignmentSeriesSheet: View {
                 .onChange(of: hasTime) { _, on in rule.dueTime = on ? (rule.dueTime ?? LocalTime(hour: 23, minute: 59)) : nil }
             if hasTime, let time = rule.dueTime {
                 DatePicker("Time", selection: Binding(
-                    get: { LocalDate(Date()).startOfDay(in: .current).addingTimeInterval(TimeInterval(time.secondsSinceMidnight)) },
+                    get: { LocalDate(Date()).at(time) },
                     set: { d in
                         let c = Calendar.current.dateComponents([.hour, .minute], from: d)
                         rule.dueTime = LocalTime(hour: c.hour ?? 0, minute: c.minute ?? 0)

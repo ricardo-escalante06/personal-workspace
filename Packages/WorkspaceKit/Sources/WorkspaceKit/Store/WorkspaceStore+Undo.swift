@@ -6,6 +6,7 @@ import GRDB
 public struct TaskSnapshot: Sendable {
     public var tasks: [UUID: TaskItem?] = [:]  // value nil = didn't exist
     public var blocks: [UUID: ScheduleBlock?] = [:]
+    public var overrides: [UUID: OccurrenceOverride?] = [:]
     public var taskIds: [UUID] { Array(tasks.keys) }
     public init() {}
 }
@@ -16,7 +17,8 @@ extension WorkspaceStore {
     public func snapshot(_ taskIds: some Collection<UUID>, creating: [UUID] = []) throws -> TaskSnapshot {
         try db.read { db in
             var snap = TaskSnapshot()
-            let ids = Array(Set(taskIds))
+            // An occurrence's changes live on its series (and its overrides).
+            let ids = Array(Set(taskIds.map { OccurrenceRegistry.shared.resolve($0)?.series ?? $0 }))
             var tasks = try TaskItem.filter(ids.contains(Column("id"))).fetchAll(db)
             tasks += try TaskItem.filter(ids.contains(Column("parent_task_id"))).fetchAll(db)
             for t in tasks { snap.tasks[t.id] = .some(t) }
@@ -25,6 +27,9 @@ extension WorkspaceStore {
             let all = Array(snap.tasks.keys)
             for b in try ScheduleBlock.filter(all.contains(Column("task_id"))).fetchAll(db) {
                 snap.blocks[b.id] = .some(b)
+            }
+            for o in try OccurrenceOverride.filter(all.contains(Column("task_id"))).fetchAll(db) {
+                snap.overrides[o.id] = .some(o)
             }
             return snap
         }
@@ -56,6 +61,14 @@ extension WorkspaceStore {
             }
             for (_, old) in snap.blocks {
                 if var b = old ?? nil { try Self.save(&b, in: db) }
+            }
+            let currentOverrides = try OccurrenceOverride.filter(taskIds.contains(Column("task_id"))).fetchAll(db)
+            for var o in currentOverrides where snap.overrides[o.id] == nil && o.deletedAt == nil {
+                o.deletedAt = now
+                try Self.save(&o, in: db)
+            }
+            for (_, old) in snap.overrides {
+                if var o = old ?? nil { try Self.save(&o, in: db) }
             }
         }
     }

@@ -20,6 +20,10 @@ struct TaskInspector: View {
     @State private var showNewTag = false
     @State private var newTagName = ""
     @FocusState private var titleFocused: Bool
+    /// The repeating task this occurrence belongs to (nil for a plain task).
+    @State private var series: TaskItem?
+    @State private var pendingTimeChange: LocalTime??
+    @State private var editingRepeat = false
 
     var body: some View {
         Group {
@@ -33,18 +37,28 @@ struct TaskInspector: View {
     }
 
     private func observe() async {
-        let id = taskId
-        let observation = ValueObservation.tracking { db -> (TaskItem?, [ScheduleBlock], [TaskItem], [TaskItem]) in
-            let task = try TaskItem.live().filter(id: id).fetchOne(db)
+        // An occurrence of a repeating task: show it, backed by its series + override.
+        let occurrence = OccurrenceRegistry.shared.resolve(taskId)
+        let id = occurrence?.series ?? taskId
+        let observation = ValueObservation.tracking { db -> (TaskItem?, [ScheduleBlock], [TaskItem], [TaskItem], TaskItem?) in
+            let stored = try TaskItem.live().filter(id: id).fetchOne(db)
+            var task = stored
+            if let occurrence, let stored {
+                let o = try OccurrenceOverride.live()
+                    .filter(Column("task_id") == id && Column("occurrence_key") == occurrence.key).fetchOne(db)
+                task = Occurrences.instance(of: stored, key: occurrence.key, override: o)
+            }
             let blocks = try ScheduleBlock.live().filter(Column("task_id") == id).order(Column("starts_at")).fetchAll(db)
+                .filter { b in occurrence == nil || b.occurrenceKey == nil || b.occurrenceKey == occurrence?.key }
             let subtasks = try TaskItem.live().filter(Column("parent_task_id") == id).order(Column("sort_rank")).fetchAll(db)
             let milestones = try TaskItem.live()
                 .filter(Column("container_id") == task?.containerId && Column("is_milestone") == true)
                 .order(Column("due_date"), Column("sort_rank")).fetchAll(db)
-            return (task, blocks, subtasks, milestones)
+            return (task, blocks, subtasks, milestones, stored?.isRecurring == true ? stored : nil)
         }
         do {
-            for try await (t, b, s, m) in observation.values(in: model.store.db) {
+            for try await (t, b, s, m, series) in observation.values(in: model.store.db) {
+                self.series = series
                 milestones = m
                 // Don't clobber text the user is typing.
                 if !titleFocused { titleDraft = t?.title ?? "" }
@@ -132,7 +146,10 @@ struct TaskInspector: View {
                 }
             }
 
-            Section("Dates") {
+            RepeatSection(task: task, series: series, editing: $editingRepeat)
+
+            Section(task.isOccurrence ? "This occurrence" : "Dates") {
+                if !task.isOccurrence {
                 Toggle("Start date", isOn: Binding(
                     get: { task.startDate != nil },
                     set: { on in model.editTask(task.id) { $0.startDate = on ? (task.dueDate.map { min($0, LocalDate(Date())) } ?? LocalDate(Date())) : nil } }
@@ -143,10 +160,13 @@ struct TaskInspector: View {
                         set: { d in model.editTask(task.id) { $0.startDate = LocalDate(d) } }
                     ), displayedComponents: .date)
                 }
+                }
+                if !task.isRecurring {
                 Toggle("Due date", isOn: Binding(
                     get: { task.dueDate != nil },
                     set: { on in model.editTask(task.id) { $0.dueDate = on ? LocalDate(Date()) : nil } }
                 ))
+                }
                 if let due = task.dueDate {
                     DatePicker("Date", selection: Binding(
                         get: { due.startOfDay(in: .current) },
@@ -154,14 +174,14 @@ struct TaskInspector: View {
                     ), displayedComponents: .date)
                     Toggle("Specific time", isOn: Binding(
                         get: { task.dueTime != nil },
-                        set: { on in model.editTask(task.id) { $0.dueTime = on ? LocalTime(hour: 23, minute: 59) : nil } }
+                        set: { on in changeTime(task, on ? LocalTime(hour: 23, minute: 59) : nil) }
                     ))
                     if let time = task.dueTime {
                         DatePicker("Time", selection: Binding(
-                            get: { due.startOfDay(in: .current).addingTimeInterval(TimeInterval(time.secondsSinceMidnight)) },
+                            get: { due.at(time) },
                             set: { d in
                                 let c = Calendar.current.dateComponents([.hour, .minute], from: d)
-                                model.editTask(task.id) { $0.dueTime = LocalTime(hour: c.hour ?? 0, minute: c.minute ?? 0) }
+                                changeTime(task, LocalTime(hour: c.hour ?? 0, minute: c.minute ?? 0))
                             }
                         ), displayedComponents: .hourAndMinute)
                     }
@@ -230,12 +250,44 @@ struct TaskInspector: View {
             }
 
             Section {
-                Button("Delete Task", role: .destructive) { model.deleteTask(task.id) }
+                if task.isOccurrence {
+                    Button("Skip This One") { model.deleteTask(task.id) }
+                    Button("Delete Repeating Task", role: .destructive) { if let s = series { model.deleteTask(s.id) } }
+                } else {
+                    Button("Delete Task", role: .destructive) { model.deleteTask(task.id) }
+                }
             }
         }
         .formStyle(.grouped)
+        .confirmationDialog("Change the time for…", isPresented: Binding(
+            get: { pendingTimeChange != nil }, set: { if !$0 { pendingTimeChange = nil } }), titleVisibility: .visible) {
+            Button("Only This One") { applyTime(.one) }
+            Button("This and Future Ones") { applyTime(.following) }
+            Button("All of Them") { applyTime(.all) }
+            Button("Cancel", role: .cancel) { pendingTimeChange = nil }
+        } message: {
+            Text("Earlier ones keep their time with “This and Future Ones”.")
+        }
+        .sheet(isPresented: $editingRepeat) {
+            if let base = series ?? self.task { RepeatEditorSheet(task: base) }
+        }
         .scrollContentBackground(.hidden)
         .background(WSColor.raised)
+    }
+
+    /// Due time on a repeating task asks which occurrences it applies to.
+    private func changeTime(_ task: TaskItem, _ time: LocalTime?) {
+        if task.isOccurrence {
+            pendingTimeChange = .some(time)
+        } else {
+            model.editTask(task.id) { $0.dueTime = time }
+        }
+    }
+
+    private func applyTime(_ scope: EventEditScope) {
+        guard let task, case .some(let time) = pendingTimeChange else { return }
+        pendingTimeChange = nil
+        model.editRepeating(task, scope: scope) { $0.dueTime = time }
     }
 
     private func commitTitle() {

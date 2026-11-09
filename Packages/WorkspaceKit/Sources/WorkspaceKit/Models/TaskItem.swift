@@ -129,13 +129,19 @@ public struct TaskItem: SyncRecord, Hashable {
 
     public var isRecurring: Bool { rrule != nil }
 
+    /// Set only on a computed occurrence of a repeating task (never stored):
+    /// the series it belongs to and its key ("2026-11-15").
+    public var occurrenceOf: UUID? = nil
+    public var occurrenceKey: String? = nil
+    public var isOccurrence: Bool { occurrenceOf != nil }
+
     /// The deadline as an instant, or nil for no deadline. Date-only deadlines
     /// resolve to the end of that day in `timeZone`.
     public func dueInstant(in timeZone: TimeZone = .current) -> Date? {
         guard let dueDate else { return nil }
         if let dueTime {
             let tz = dueTz.flatMap(TimeZone.init(identifier:)) ?? timeZone
-            return dueDate.startOfDay(in: tz).addingTimeInterval(TimeInterval(dueTime.secondsSinceMidnight))
+            return dueDate.at(dueTime, in: tz)
         }
         return dueDate.adding(days: 1).startOfDay(in: timeZone).addingTimeInterval(-1)
     }

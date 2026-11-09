@@ -42,6 +42,14 @@ public struct LocalDate: Hashable, Comparable, Sendable, Codable, CustomStringCo
         return calendar.date(from: DateComponents(year: year, month: month, day: day))!
     }
 
+    /// This date at a wall-clock time (correct on days the clocks change).
+    public func at(_ time: LocalTime, in timeZone: TimeZone = .current) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        return calendar.date(from: DateComponents(year: year, month: month, day: day,
+                                                  hour: time.hour, minute: time.minute, second: time.second))!
+    }
+
     public func adding(days: Int) -> LocalDate {
         let utc = TimeZone(identifier: "UTC")!
         return LocalDate(startOfDay(in: utc).addingTimeInterval(TimeInterval(days) * 86_400), in: utc)

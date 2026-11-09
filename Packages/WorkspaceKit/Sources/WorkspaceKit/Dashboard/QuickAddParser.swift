@@ -13,6 +13,8 @@ import Foundation
 ///  - dates         today, tod, tomorrow, tmr, tmrw, mon…sun (next occurrence, today
 ///                  included), next fri, 11/13, nov 13, in 3 days
 ///  - times         11:59pm, 5pm, 5p, 17:30, noon, midnight (needs a date; defaults to today)
+///  - repeats       every day / weekday / week / month / year, daily, weekly, monthly,
+///                  every sun, every mon wed, every 2 weeks, every other week
 public struct QuickAddParser: Sendable {
     public struct ContainerOption: Sendable, Hashable {
         public var id: UUID
@@ -30,7 +32,7 @@ public struct QuickAddParser: Sendable {
     }
 
     public struct Token: Sendable, Equatable, Identifiable {
-        public enum Kind: Sendable, Equatable { case container, category, priority, date, time }
+        public enum Kind: Sendable, Equatable { case container, category, priority, date, time, repeats }
         public var kind: Kind
         public var text: String
         /// Human label, e.g. "CS61B", "Fri Nov 13", "11:59 PM".
@@ -48,6 +50,8 @@ public struct QuickAddParser: Sendable {
         public var tokens: [Token]
         /// `#name` that matched no tag: create a tag with this name.
         public var newTagName: String? = nil
+        /// "every week", "every mon wed": makes it a repeating task.
+        public var repeatRule: RepeatRule? = nil
     }
 
     public var containers: [ContainerOption]
@@ -116,6 +120,14 @@ public struct QuickAddParser: Sendable {
                 result.tokens.append(Token(kind: .container, text: word, label: c.name))
                 keep[i] = false; i += 1; continue
             }
+            // Repeats: "every …", "daily", "weekly"…
+            if result.repeatRule == nil, let (rule, used) = parseRepeat(at: i, words.map { $0.lowercased() }) {
+                result.repeatRule = rule
+                let text = words[i..<(i + used)].joined(separator: " ")
+                result.tokens.append(Token(kind: .repeats, text: text, label: rule.summary(anchor: nil)))
+                for k in i..<(i + used) { keep[k] = false }
+                i += used; continue
+            }
             // Dates (some take two or three words)
             if result.dueDate == nil, let (date, used) = parseDate(at: i, words.map { $0.lowercased() }) {
                 result.dueDate = date
@@ -151,6 +163,11 @@ public struct QuickAddParser: Sendable {
         if result.dueTime != nil, result.dueDate == nil {
             result.dueDate = today
         }
+        // "every sun" with no date starts on the next of those days.
+        if let rule = result.repeatRule, result.dueDate == nil {
+            result.dueDate = rule.weekdays.isEmpty ? today
+                : rule.weekdays.map { nextWeekday($0, includingToday: true) }.min()
+        }
         result.title = zip(words, keep).filter(\.1).map(\.0).joined(separator: " ")
         return result
     }
@@ -172,6 +189,38 @@ public struct QuickAddParser: Sendable {
     }
 
     // MARK: Dates
+
+    private func parseRepeat(at i: Int, _ w: [String]) -> (RepeatRule, Int)? {
+        let units: [String: RepeatRule.Frequency] = [
+            "day": .daily, "days": .daily, "week": .weekly, "weeks": .weekly,
+            "month": .monthly, "months": .monthly, "year": .yearly, "years": .yearly,
+        ]
+        switch w[i] {
+        case "daily": return (RepeatRule(.daily), 1)
+        case "weekly": return (RepeatRule(.weekly), 1)
+        case "monthly": return (RepeatRule(.monthly), 1)
+        case "yearly", "annually": return (RepeatRule(.yearly), 1)
+        case "every": break
+        default: return nil
+        }
+        guard i + 1 < w.count else { return nil }
+        let a = w[i + 1]
+        if a == "weekday" || a == "weekdays" { return (RepeatRule(.weekly, weekdays: [2, 3, 4, 5, 6]), 2) }
+        if let f = units[a] { return (RepeatRule(f), 2) }
+        if (a == "other" || Int(a) != nil), i + 2 < w.count, let f = units[w[i + 2]] {
+            return (RepeatRule(f, interval: Int(a) ?? 2), 3)
+        }
+        // every mon wed fri / every mon, wed / every tue and thu
+        var days: Set<Int> = []
+        var j = i + 1
+        while j < w.count {
+            let token = w[j].trimmingCharacters(in: CharacterSet(charactersIn: ","))
+            if let wd = Self.weekdays[token] { days.insert(wd); j += 1 }
+            else if token == "and", j + 1 < w.count, Self.weekdays[w[j + 1].trimmingCharacters(in: .punctuationCharacters)] != nil { j += 1 }
+            else { break }
+        }
+        return days.isEmpty ? nil : (RepeatRule(.weekly, weekdays: days), j - i)
+    }
 
     private func parseDate(at i: Int, _ w: [String]) -> (LocalDate, Int)? {
         let word = w[i]
