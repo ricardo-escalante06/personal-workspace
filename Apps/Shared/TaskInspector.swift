@@ -85,8 +85,8 @@ struct TaskInspector: View {
                 }
                 Picker("Location", selection: binding(\.containerId)) {
                     Text("Inbox").tag(UUID?.none)
-                    ForEach(taskHolders) { c in
-                        Text(locationLabel(c)).tag(UUID?.some(c.id))
+                    ForEach(model.taskHolders) { c in
+                        Text(model.locationLabels[c.id] ?? c.name).tag(UUID?.some(c.id))
                     }
                 }
             }
@@ -205,13 +205,6 @@ struct TaskInspector: View {
         )
     }
 
-    private var taskHolders: [Container] {
-        model.containers.filter { $0.kind.holdsTasks }.sorted { $0.path < $1.path }
-    }
-
-    private func locationLabel(_ c: Container) -> String {
-        ContainerTree.breadcrumb(for: c.id, in: model.containers).map(\.name).joined(separator: " › ")
-    }
 }
 
 /// One work block: day, start, end, delete.

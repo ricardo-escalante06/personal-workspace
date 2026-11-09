@@ -6,6 +6,7 @@ public struct ContainerNode: Identifiable, Hashable, Sendable {
     public var children: [ContainerNode]
 
     public var id: UUID { container.id }
+    public var isHidden: Bool { container.archivedAt != nil }
     /// `nil` for leaves, so SwiftUI's OutlineGroup shows no disclosure arrow.
     public var childrenOrNil: [ContainerNode]? { children.isEmpty ? nil : children }
 }
@@ -14,7 +15,8 @@ public enum ContainerTree {
     /// Builds a forest from a flat list, ordered by `sortRank` at every level.
     /// Orphans (parent missing or deleted) are shown at the root rather than hidden.
     public static func build(_ containers: [Container]) -> [ContainerNode] {
-        let live = containers.filter { $0.deletedAt == nil && $0.archivedAt == nil }
+        // Hidden (archived) containers stay in the tree so the sidebar can show them dimmed.
+        let live = containers.filter { $0.deletedAt == nil }
         let ids = Set(live.map(\.id))
         let byParent = Dictionary(grouping: live) { c -> UUID? in
             guard let p = c.parentId, ids.contains(p) else { return nil }

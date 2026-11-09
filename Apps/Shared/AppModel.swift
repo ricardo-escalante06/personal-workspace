@@ -35,9 +35,17 @@ final class AppModel {
 
     private(set) var containers: [Container] = []
     private(set) var tree: [ContainerNode] = []
+    /// O(1) lookups; rebuilt whenever containers change (used per block/row while drawing).
+    @ObservationIgnored private var containerById: [UUID: Container] = [:]
+    /// "School › CS61B" for every container, for pickers.
+    private(set) var locationLabels: [UUID: String] = [:]
+    /// Task-holding containers in tree order, for "Location" pickers.
+    private(set) var taskHolders: [Container] = []
     private(set) var userId: UUID?
     private(set) var syncStatus: SyncStatus
     private(set) var pendingChanges = 0
+    /// Open tasks with no list (Inbox).
+    private(set) var inboxCount = 0
     /// What the sidebar has selected. Never nil in practice: it falls back to All Workspace.
     var selection: SidebarItem? = .allWorkspace {
         // Clicking empty sidebar space clears the selection; treat that as All Workspace.
@@ -49,12 +57,39 @@ final class AppModel {
         if case .container(let id) = selection { return id }
         return nil
     }
+
+    // Calendar page
+    let calendarSource = CalendarSource()
+    var calendarMode: CalendarMode = .week
+    /// Any date inside the visible day/week/month.
+    var calendarAnchor = LocalDate(Date())
+    /// nil = everything; otherwise a container's subtree (+ events mapped into it).
+    var calendarScope: UUID?
+
+    /// A drag of a Google/system event waiting for confirmation ("This updates Google Calendar").
+    var pendingEventMove: PendingEventMove?
+    var pendingEventDelete: [ExternalEvent] = []
+    /// Account the "New Calendar" prompt is open for.
+    var newCalendarAccount: String?
+    var pendingCalendarDelete: CalendarSource.CalendarInfo?
+
+    /// "Open in Calendar" from a dashboard: same week, same scope.
+    func openCalendar(scope: UUID?, weekStart: LocalDate) {
+        calendarScope = scope
+        calendarAnchor = weekStart
+        calendarMode = .week
+        selection = .calendar
+    }
     var errorMessage: String?
 
     // Dashboard / editing state
     private(set) var categories: [TaskCategory] = []
     /// Task shown in the inspector.
-    var selectedTaskId: UUID?
+    var selectedTaskId: UUID? {
+        didSet { if selectedTaskId != nil { inspectedEvent = nil } }
+    }
+    /// Calendar event shown in the inspector (instead of a task).
+    var inspectedEvent: ExternalEvent?
     var showInspector = false
     /// The window's undo manager (set by RootView) so ⌘Z / Edit › Undo covers task actions.
     @ObservationIgnored weak var undoManager: UndoManager?
@@ -88,6 +123,8 @@ final class AppModel {
            (try? store.containers().isEmpty) == true {
             loadSampleData()
         }
+        // Debug aid: `--calendar` opens on the Calendar page.
+        if ProcessInfo.processInfo.arguments.contains("--calendar") { selection = .calendar }
         try? store.ensureBuiltInCategories()
         observe()
         Task { await restoreSession() }
@@ -103,8 +140,7 @@ final class AppModel {
             guard let db = self?.store.db else { return }
             do {
                 for try await containers in containerObservation.values(in: db) {
-                    self?.containers = containers
-                    self?.tree = ContainerTree.build(containers)
+                    self?.applyContainers(containers)
                 }
             } catch {
                 self?.errorMessage = error.localizedDescription
@@ -118,6 +154,20 @@ final class AppModel {
             guard let db = self?.store.db else { return }
             for try await categories in categoryObservation.values(in: db) {
                 self?.categories = categories
+            }
+        }
+
+        let inboxObservation = ValueObservation.tracking { db in
+            try TaskItem.live()
+                .filter(Column("container_id") == nil)
+                .filter(Column("parent_task_id") == nil)
+                .filter(![TaskStatus.done.rawValue, TaskStatus.cancelled.rawValue].contains(Column("status")))
+                .fetchCount(db)
+        }
+        Task { [weak self] in
+            guard let db = self?.store.db else { return }
+            for try await count in inboxObservation.values(in: db) {
+                self?.inboxCount = count
             }
         }
 
@@ -135,7 +185,22 @@ final class AppModel {
     }
 
     func container(_ id: UUID?) -> Container? {
-        containers.first { $0.id == id }
+        id.flatMap { containerById[$0] }
+    }
+
+    private func applyContainers(_ list: [Container]) {
+        let byId = Dictionary(uniqueKeysWithValues: list.map { ($0.id, $0) })
+        containerById = byId
+        var labels: [UUID: String] = [:]
+        for c in list {
+            labels[c.id] = c.path.split(separator: "/")
+                .compactMap { UUID(uuidString: String($0)).flatMap { byId[$0]?.name } }
+                .joined(separator: " › ")
+        }
+        locationLabels = labels
+        containers = list
+        tree = ContainerTree.build(list)
+        taskHolders = containersInSidebarOrder.filter { $0.kind.holdsTasks }
     }
 
     // MARK: Auth
@@ -206,7 +271,8 @@ final class AppModel {
             }
         }
 
-        pathMonitor.pathUpdateHandler = { [weak self] path in
+        // @Sendable: NWPathMonitor calls this on its own queue; hop to the main actor inside.
+        pathMonitor.pathUpdateHandler = { @Sendable [weak self] path in
             let isUp = path.status == .satisfied
             Task { @MainActor in self?.networkChanged(isUp: isUp) }
         }
@@ -233,11 +299,13 @@ final class AppModel {
 
     /// Call when the app/window comes to the foreground.
     func appBecameActive() {
+        calendarSource.refresh()
         Task { await scheduler?.request(.appActive) }
     }
 
     /// Toolbar button / ⇧⌘R: sync immediately.
     func syncNow() async {
+        calendarSource.refresh()
         await scheduler?.request(.manual)
     }
 
@@ -284,12 +352,14 @@ final class AppModel {
 
     /// Saves the create/edit sheet. Returns false (and shows the error) on failure.
     @discardableResult
-    func saveContainer(_ request: ContainerEditorRequest, name: String, kind: ContainerKind, color: String) -> Bool {
+    func saveContainer(_ request: ContainerEditorRequest, name: String, kind: ContainerKind, color: String,
+                       classSetup: ClassSetup? = nil) -> Bool {
         do {
             switch request.mode {
             case .create(_, let parentId):
                 let created = try store.createContainer(name: name, kind: kind, parentId: parentId, color: color)
                 if kind == .project { try ensureProjectExtras(created.id) }
+                if let classSetup { try applyClassSetup(classSetup, to: created.id) }
                 selection = .container(created.id)
             case .edit(let original):
                 if name != original.name { try store.renameContainer(original.id, to: name) }
@@ -298,6 +368,7 @@ final class AppModel {
                     try store.changeKind(original.id, to: kind)
                     if kind == .project { try ensureProjectExtras(original.id) }
                 }
+                if let classSetup { try applyClassSetup(classSetup, to: original.id) }
             }
             return true
         } catch {
@@ -318,6 +389,32 @@ final class AppModel {
         perform {
             try store.changeKind(id, to: kind)
             if kind == .project { try ensureProjectExtras(id) }
+        }
+    }
+
+    enum DropPlacement { case before, inside, after }
+
+    /// Sidebar drag-and-drop: place `id` before/after `target` (same parent), or inside it.
+    @discardableResult
+    func placeContainer(_ id: UUID, relativeTo target: Container, _ placement: DropPlacement) -> Bool {
+        guard id != target.id else { return false }
+        do {
+            switch placement {
+            case .inside:
+                try store.reorderContainer(id, parent: target.id, before: nil)
+            case .before:
+                try store.reorderContainer(id, parent: target.parentId, before: target.id)
+            case .after:
+                let siblings = containersInSidebarOrder.filter { $0.parentId == target.parentId && $0.id != id }
+                let next = siblings.firstIndex { $0.id == target.id }.flatMap { i in
+                    i + 1 < siblings.count ? siblings[i + 1].id : nil
+                }
+                try store.reorderContainer(id, parent: target.parentId, before: next)
+            }
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -470,14 +567,182 @@ final class AppModel {
         perform { try store.addScheduleBlock(taskId: task.id, start: start, end: start.addingTimeInterval(3600)) }
     }
 
-    // Week navigation
+    // Calendar
 
-    func shiftWeek(_ weeks: Int) {
-        weekStart = weekStart.adding(days: 7 * weeks)
+    /// Shows an event in the details panel.
+    func inspect(_ event: ExternalEvent, open: Bool) {
+        selectedTaskId = nil
+        inspectedEvent = event
+        if open { setInspector(visible: true) }
     }
 
+    func updateEvent(_ event: ExternalEvent, start: Date, end: Date) {
+        runCalendar { try await $0.move(event, start: start, end: end) }
+    }
+
+    /// Yes / No / Maybe on a Google invitation.
+    func respond(_ event: ExternalEvent, _ response: EventAttendee.Response) {
+        runCalendar { try await $0.respond(event, response) }
+    }
+
+    func createCalendar(named name: String, in account: String) {
+        runCalendar { try await $0.createCalendar(named: name, inAccount: account) }
+    }
+
+    func deleteCalendar(_ info: CalendarSource.CalendarInfo) {
+        pendingCalendarDelete = nil
+        runCalendar { try await $0.deleteCalendar(info) }
+    }
+
+    func connectGoogle() {
+        runCalendar { try await $0.connectGoogle() }
+    }
+
+    /// Runs an async calendar write and surfaces errors (cancelled sign-ins stay quiet).
+    func runCalendar(_ work: @escaping (CalendarSource) async throws -> Void) {
+        let source = calendarSource
+        Task {
+            do { try await work(source) }
+            catch GoogleAuth.AuthError.cancelled {}
+            catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func setHidden(_ id: UUID, _ hidden: Bool) {
+        perform { try store.setHidden(id, hidden) }
+    }
+
+    func createTaskWithBlock(title: String, containerId: UUID?, start: Date, end: Date) {
+        perform {
+            let task = try store.addTask(title: title, containerId: containerId)
+            try store.addScheduleBlock(taskId: task.id, start: start, end: end)
+            selectedTaskId = task.id
+        }
+    }
+
+    func createEvent(title: String, start: Date, end: Date, calendarId: String?) {
+        runCalendar { try await $0.create(title: title, start: start, end: end, calendarId: calendarId) }
+    }
+
+    func confirmEventMove() {
+        guard let pending = pendingEventMove else { return }
+        pendingEventMove = nil
+        runCalendar { source in
+            for m in pending.moves { try await source.move(m.event, start: m.start, end: m.end) }
+        }
+    }
+
+    func confirmEventDelete() {
+        let events = pendingEventDelete
+        pendingEventDelete = []
+        runCalendar { source in for e in events { try await source.delete(e) } }
+        if let inspected = inspectedEvent, events.contains(where: { $0.key == inspected.key }) { inspectedEvent = nil }
+    }
+
+    /// Delete key on the calendar: blocks are removed (⌘Z restores), deadlines lose their
+    /// due date (⌘Z restores), events are confirmed first.
+    func deleteCalendarItems(_ items: [CalendarItem]) {
+        var events: [ExternalEvent] = []
+        var blockIds: [UUID] = []
+        var clearedDeadlines: [(UUID, LocalDate?, LocalTime?)] = []
+        for item in items {
+            switch item.source {
+            case .block(_, let blockId):
+                blockIds.append(blockId)
+            case .deadline(let taskId):
+                let t = try? store.db.read { try TaskItem.fetchOne($0, id: taskId) }
+                clearedDeadlines.append((taskId, t?.dueDate, t?.dueTime))
+            case .event(let e):
+                // Your own events, or (for Google) invites on a calendar you can write to:
+                // deleting an invite removes it from your calendar.
+                let calendarWritable = calendarSource.writableCalendars.contains { $0.id == e.calendarId }
+                if e.isWritable || (e.provider == .google && calendarWritable) { events.append(e) }
+            }
+        }
+        perform {
+            for id in blockIds { try store.deleteScheduleBlock(id) }
+            for (taskId, _, _) in clearedDeadlines { try store.editTask(taskId) { $0.dueDate = nil } }
+        }
+        if !blockIds.isEmpty || !clearedDeadlines.isEmpty {
+            undoManager?.registerUndo(withTarget: self) { model in
+                MainActor.assumeIsolated {
+                    model.perform {
+                        for id in blockIds { try model.store.restoreScheduleBlock(id) }
+                        for (taskId, date, time) in clearedDeadlines {
+                            try model.store.editTask(taskId) { $0.dueDate = date; $0.dueTime = time }
+                        }
+                    }
+                }
+            }
+            undoManager?.setActionName(blockIds.isEmpty ? "Clear Due Date" : "Delete Work Block")
+        }
+        if !events.isEmpty { pendingEventDelete = events }
+    }
+
+    func addBlock(to taskId: UUID, start: Date, end: Date) {
+        perform { try store.addScheduleBlock(taskId: taskId, start: start, end: end) }
+        selectedTaskId = taskId
+    }
+
+    /// Manual "Assign to…": maps this event (by its stable key) to a container, or clears it.
+    func assign(_ event: ExternalEvent, to containerId: UUID?) {
+        perform {
+            try store.db.write { db in
+                let existing = try EventLink.live().filter(Column("external_event_key") == event.key).fetchAll(db)
+                for var link in existing {
+                    link.deletedAt = Date()
+                    try WorkspaceStore.save(&link, in: db)
+                }
+                if let containerId {
+                    var link = EventLink(externalEventKey: event.key, containerId: containerId)
+                    try WorkspaceStore.save(&link, in: db)
+                }
+            }
+        }
+    }
+
+    // Week navigation
+
+    /// ⌘[ / ⌘]: moves the calendar when it's showing, otherwise the dashboard week.
+    func shiftWeek(_ weeks: Int) {
+        if selection == .calendar {
+            stepCalendar(weeks)
+        } else {
+            weekStart = weekStart.adding(days: 7 * weeks)
+        }
+    }
+
+    /// ⌘T: today, on the calendar or the dashboard.
     func goToThisWeek() {
-        weekStart = Dashboard.weekStart(containing: LocalDate(Date()))
+        let today = LocalDate(Date())
+        if selection == .calendar {
+            calendarAnchor = calendarMode == .week ? Dashboard.weekStart(containing: today) : today
+        } else {
+            weekStart = Dashboard.weekStart(containing: today)
+        }
+    }
+
+    /// One period back/forward in the current calendar mode.
+    func stepCalendar(_ direction: Int) {
+        switch calendarMode {
+        case .day: calendarAnchor = calendarAnchor.adding(days: direction)
+        case .week: calendarAnchor = calendarAnchor.adding(days: 7 * direction)
+        case .month:
+            var c = Calendar(identifier: .gregorian)
+            c.timeZone = TimeZone(identifier: "UTC")!
+            let d = c.date(byAdding: .month, value: direction, to: calendarAnchor.startOfDay(in: c.timeZone))!
+            calendarAnchor = LocalDate(d, in: c.timeZone)
+        }
+    }
+
+    /// Containers in sidebar order (depth-first by rank), for menus that mirror the sidebar.
+    var containersInSidebarOrder: [Container] {
+        var out: [Container] = []
+        func walk(_ nodes: [ContainerNode]) {
+            for n in nodes { out.append(n.container); walk(n.children) }
+        }
+        walk(tree)
+        return out
     }
 
     // Toast
@@ -496,7 +761,7 @@ final class AppModel {
         withAnimation(.smooth(duration: 0.2)) { toast = nil }
     }
 
-    private func perform(_ work: () throws -> Void) {
+    func perform(_ work: () throws -> Void) {
         do {
             try work()
         } catch {
@@ -509,7 +774,14 @@ final class AppModel {
 /// whose tag is nil, so it couldn't be re-selected after picking a container.
 enum SidebarItem: Hashable {
     case allWorkspace
+    case inbox
+    case calendar
     case container(UUID)
+}
+
+enum CalendarMode: String, CaseIterable, Identifiable {
+    case day = "Day", week = "Week", month = "Month"
+    var id: String { rawValue }
 }
 
 typealias ContainerColorName = String

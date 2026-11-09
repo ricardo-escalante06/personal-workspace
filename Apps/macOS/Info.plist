@@ -20,8 +20,14 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>GoogleClientID</key>
+	<string>$(GOOGLE_CLIENT_ID)</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Workspace shows your calendar events (including Google Calendar) next to your tasks, and lets you move events you can edit.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Workspace shows your calendar events next to your tasks.</string>
 	<key>SupabaseAnonKey</key>
 	<string>$(SUPABASE_ANON_KEY)</string>
 	<key>SupabaseHost</key>

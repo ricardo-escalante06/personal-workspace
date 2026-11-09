@@ -4,6 +4,11 @@ import GRDB
 extension WorkspaceStore {
     // MARK: Containers
 
+    /// Hides or shows a container (and, through ScopeQuery, everything inside it).
+    public func setHidden(_ id: UUID, _ hidden: Bool) throws {
+        try update(Container.self, id) { $0.archivedAt = hidden ? Date() : nil }
+    }
+
     public func setColor(_ id: UUID, _ color: String) throws {
         try update(Container.self, id) { $0.color = color }
     }
@@ -174,6 +179,17 @@ extension WorkspaceStore {
                 block.deletedAt = nil
                 try Self.save(&block, in: db)
             }
+        }
+    }
+}
+
+extension WorkspaceStore {
+    /// Un-deletes a work block (⌘Z after Delete on the calendar).
+    public func restoreScheduleBlock(_ id: UUID) throws {
+        try db.write { db in
+            guard var b = try ScheduleBlock.fetchOne(db, id: id) else { return }
+            b.deletedAt = nil
+            try Self.save(&b, in: db)
         }
     }
 }

@@ -41,7 +41,7 @@ struct DashboardView: View {
                             previousWeek: { model.shiftWeek(-1) },
                             nextWeek: { model.shiftWeek(1) },
                             thisWeek: { model.goToThisWeek() },
-                            openCalendar: nil,  // Full calendar arrives in Milestone 2.
+                            openCalendar: { model.openCalendar(scope: scope, weekStart: model.weekStart) },
                             selectTask: { model.select($0) },
                             openTask: { model.openDetails($0) },
                             toggleTask: { model.toggleDone($0) },
@@ -427,6 +427,13 @@ struct TaskContextMenu: View {
             Button("Next Week") { model.editTask(task.id) { $0.dueDate = LocalDate(Date()).adding(days: 7) } }
             Divider()
             Button("No Due Date") { model.editTask(task.id) { $0.dueDate = nil } }
+        }
+        Menu("Move to") {
+            Button("Inbox") { model.editTask(task.id) { $0.containerId = nil } }
+            Divider()
+            ForEach(model.taskHolders.filter { $0.archivedAt == nil }) { c in
+                Button(model.locationLabels[c.id] ?? c.name) { model.editTask(task.id) { $0.containerId = c.id } }
+            }
         }
         Divider()
         Button("Delete", role: .destructive) { model.deleteTask(task.id) }

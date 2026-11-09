@@ -128,6 +128,33 @@ enum LocalSchema {
                 t.column("cursor", .datetime).notNull()
             }
         }
+
+        // Milestone 2: calendar mapping tables.
+        m.registerMigration("v2-calendar") { db in
+            func synced(_ name: String, _ body: (TableDefinition) -> Void) throws {
+                try db.create(table: name) { t in
+                    t.primaryKey("id", .blob)
+                    t.column("owner_id", .blob)
+                    body(t)
+                    t.column("created_at", .datetime).notNull()
+                    t.column("updated_at", .datetime).notNull()
+                    t.column("deleted_at", .datetime)
+                }
+            }
+            try synced("event_mapping_rules") { t in
+                t.column("match_type", .text).notNull()
+                t.column("match_value", .text).notNull()
+                t.column("container_id", .blob).notNull()
+                t.column("priority", .integer).notNull()
+            }
+            try synced("event_links") { t in
+                t.column("external_event_key", .text).notNull().indexed()
+                t.column("occurrence_start", .datetime)
+                t.column("container_id", .blob)
+                t.column("task_id", .blob)
+                t.column("notes", .text)
+            }
+        }
         return m
     }
 }

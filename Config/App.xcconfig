@@ -3,4 +3,5 @@
 // If Secrets.xcconfig is missing, the app runs in local-only mode.
 SUPABASE_HOST =
 SUPABASE_ANON_KEY =
+GOOGLE_CLIENT_ID =
 #include? "Secrets.xcconfig"

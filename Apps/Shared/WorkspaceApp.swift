@@ -32,16 +32,41 @@ struct WorkspaceApp: App {
                 Button(model.showInspector ? "Hide Details" : "Show Details") { model.toggleInspector() }
                     .keyboardShortcut("i")
                 Divider()
-                Button("Previous Week") { model.shiftWeek(-1) }
+                Button("Previous") { model.shiftWeek(-1) }
                     .keyboardShortcut("[")
-                Button("Next Week") { model.shiftWeek(1) }
+                Button("Next") { model.shiftWeek(1) }
                     .keyboardShortcut("]")
-                Button("This Week") { model.goToThisWeek() }
+                Button("Today") { model.goToThisWeek() }
                     .keyboardShortcut("t")
+                Divider()
+                Button("All Workspace") { model.selection = .allWorkspace }
+                    .keyboardShortcut("1")
+                Button("Inbox") { model.selection = .inbox }
+                    .keyboardShortcut("2")
+                Button("Calendar") { model.selection = .calendar }
+                    .keyboardShortcut("3")
+                Divider()
+                Button("Day View") { model.calendarMode = .day; model.selection = .calendar }
+                    .keyboardShortcut("1", modifiers: [.command, .control])
+                Button("Week View") {
+                    model.calendarMode = .week
+                    model.calendarAnchor = Dashboard.weekStart(containing: model.calendarAnchor)
+                    model.selection = .calendar
+                }
+                .keyboardShortcut("2", modifiers: [.command, .control])
+                Button("Month View") { model.calendarMode = .month; model.selection = .calendar }
+                    .keyboardShortcut("3", modifiers: [.command, .control])
             }
             CommandMenu("Debug") {
                 Button("Load Sample Data") { model.loadSampleData() }
             }
+        }
+        #endif
+        #if os(macOS)
+        Settings {
+            SettingsView()
+                .environment(model)
+                .preferredColorScheme(.dark)
         }
         #endif
     }

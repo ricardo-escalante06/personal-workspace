@@ -43,13 +43,18 @@ targets:
       properties:
         CFBundleDisplayName: Workspace
         LSApplicationCategoryType: public.app-category.productivity
+        NSCalendarsFullAccessUsageDescription: Workspace shows your calendar events (including Google Calendar) next to your tasks, and lets you move events you can edit.
+        NSCalendarsUsageDescription: Workspace shows your calendar events next to your tasks.
         SupabaseHost: $(SUPABASE_HOST)
         SupabaseAnonKey: $(SUPABASE_ANON_KEY)
+        GoogleClientID: $(GOOGLE_CLIENT_ID)
     entitlements:
       path: Apps/macOS/Workspace.entitlements
       properties:
         com.apple.security.app-sandbox: true
         com.apple.security.network.client: true
+        # Read/write the user's calendars (Google via macOS Calendar accounts).
+        com.apple.security.personal-information.calendars: true
         com.apple.developer.applesignin: [Default]
         # Supabase stores the session in the Keychain.
         keychain-access-groups: ["$(AppIdentifierPrefix)com.rescalante.workspace"]
@@ -77,9 +82,12 @@ targets:
       properties:
         CFBundleDisplayName: Workspace
         UILaunchScreen: {}
+        NSCalendarsFullAccessUsageDescription: Workspace shows your calendar events (including Google Calendar) next to your tasks, and lets you move events you can edit.
+        NSCalendarsUsageDescription: Workspace shows your calendar events next to your tasks.
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         SupabaseHost: $(SUPABASE_HOST)
         SupabaseAnonKey: $(SUPABASE_ANON_KEY)
+        GoogleClientID: $(GOOGLE_CLIENT_ID)
     entitlements:
       path: Apps/iOS/Workspace.entitlements
       properties:

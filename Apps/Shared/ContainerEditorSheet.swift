@@ -1,3 +1,4 @@
+import GRDB
 import SwiftUI
 import WorkspaceKit
 import WorkspaceUI
@@ -11,6 +12,7 @@ struct ContainerEditorSheet: View {
     @State private var name = ""
     @State private var kind: ContainerKind = .list
     @State private var color: ContainerColor = .steel
+    @State private var classSetup = ClassSetup()
     @FocusState private var nameFocused: Bool
 
     private var isCreate: Bool {
@@ -93,6 +95,11 @@ struct ContainerEditorSheet: View {
                 }
             }
 
+            if kind == .class {
+                Divider()
+                ClassScheduleEditor(setup: $classSetup)
+            }
+
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
@@ -103,7 +110,7 @@ struct ContainerEditorSheet: View {
             }
         }
         .padding(WSSpace.xl)
-        .frame(width: 420)
+        .frame(width: kind == .class ? 560 : 420)
         .background(WSColor.raised)
         .onAppear(perform: load)
     }
@@ -132,14 +139,19 @@ struct ContainerEditorSheet: View {
             name = c.name
             kind = c.kind
             color = ContainerColor(named: c.color)
+            if c.kind == .class { classSetup = model.loadClassSetup(for: c) }
         }
+        if case .create = request.mode { classSetup.calendarId = model.calendarSource.defaultCalendarId }
         nameFocused = true
     }
 
     private func save() {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
-        if model.saveContainer(request, name: trimmed, kind: kind, color: color.rawValue) {
+        var setup = classSetup
+        if setup.code.trimmingCharacters(in: .whitespaces).isEmpty { setup.code = trimmed }
+        if model.saveContainer(request, name: trimmed, kind: kind, color: color.rawValue,
+                               classSetup: kind == .class ? setup : nil) {
             dismiss()
         }
     }

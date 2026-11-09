@@ -65,6 +65,8 @@ public struct SyncTable: Sendable {
         .of(TaskItem.self, pushOrder: { ($0.parentTaskId == nil ? 0 : 1) < ($1.parentTaskId == nil ? 0 : 1) }),
         .of(ScheduleBlock.self),
         .of(OccurrenceOverride.self),
+        .of(EventMappingRule.self),
+        .of(EventLink.self),
     ]
 }
 

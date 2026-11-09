@@ -57,6 +57,20 @@ public enum ContainerColor: String, CaseIterable, Identifiable, Sendable {
     }
 
     public var displayName: String { rawValue.capitalized }
+
+    /// Accent as 0xRRGGBB (for calendar color overrides).
+    public var hex: UInt32 {
+        switch self {
+        case .plum: 0xB65FD1
+        case .violet: 0x8B7BE0
+        case .green: 0x4FA66A
+        case .rust: 0xE07A45
+        case .steel: 0x5AA9E6
+        case .gold: 0xD6A740
+        case .rose: 0xE0607E
+        case .grey: 0x8A8A8A
+        }
+    }
 }
 
 public enum WSSpace {

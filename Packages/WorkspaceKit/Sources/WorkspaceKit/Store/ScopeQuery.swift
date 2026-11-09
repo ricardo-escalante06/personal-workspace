@@ -9,10 +9,21 @@ public enum ScopeQuery {
     /// Live tasks in the scope, including subtasks. Root scope includes the Inbox.
     public static func tasks(in scope: UUID?) -> QueryInterfaceRequest<TaskItem> {
         let live = TaskItem.live()
+        // Tasks under a hidden container are left out, unless you're looking at that
+        // container (or something inside it) directly.
+        let scopePath: SQL = scope.map { SQL("(SELECT path FROM containers WHERE id = \($0))") } ?? SQL("NULL")
+        let notHidden: SQLExpression = SQL("""
+            (container_id IS NULL OR NOT EXISTS (
+                SELECT 1 FROM containers c, containers h
+                WHERE c.id = tasks.container_id
+                  AND h.archived_at IS NOT NULL AND h.deleted_at IS NULL
+                  AND c.path LIKE h.path || '%'
+                  AND NOT (COALESCE(\(scopePath), '') LIKE h.path || '%')
+            ))
+            """).sqlExpression
         guard let scope else {
-            return live.order(Column("sort_rank"))
+            return live.filter(notHidden).order(Column("sort_rank"))
         }
-        let scopePath = SQL("(SELECT path FROM containers WHERE id = \(scope))")
         let inScope: SQLExpression = SQL("""
             container_id IN (
                 SELECT id FROM containers
@@ -20,7 +31,12 @@ public enum ScopeQuery {
                   AND path LIKE \(scopePath) || '%'
             )
             """).sqlExpression
-        return live.filter(inScope).order(Column("sort_rank"))
+        return live.filter(inScope).filter(notHidden).order(Column("sort_rank"))
+    }
+
+    /// Paths of hidden (archived) containers; anything under them is hidden too.
+    public static func hiddenPaths(_ db: Database) throws -> [String] {
+        try String.fetchAll(db, sql: "SELECT path FROM containers WHERE archived_at IS NOT NULL AND deleted_at IS NULL")
     }
 
     /// Live containers in the subtree under `scope` (excluding the scope itself).
