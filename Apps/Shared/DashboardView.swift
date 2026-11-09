@@ -32,7 +32,6 @@ struct DashboardView: View {
                 if data.tasks.isEmpty && children.isEmpty {
                     emptyState
                 } else {
-                    if !data.starred.isEmpty { starredSection }
                     WeekStripView(
                         days: data.week,
                         today: today,
@@ -157,23 +156,6 @@ struct DashboardView: View {
         }
     }
 
-    // MARK: Starred
-
-    /// Big things (starred, or an Exam) pinned above everything else until they're done.
-    private var starredSection: some View {
-        VStack(alignment: .leading, spacing: WSSpace.s) {
-            SectionLabel("Starred", trailing: "\(data.starred.count)")
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: WSSpace.s) {
-                    ForEach(data.starred) { task in
-                        StarredCard(task: task, today: today)
-                            .taskInteractions(task, order: data.starred.map(\.id), draggable: false)
-                    }
-                }
-            }
-        }
-    }
-
     // MARK: Today + Upcoming
 
     private var todayAndUpcoming: some View {
@@ -254,13 +236,25 @@ struct DashboardView: View {
     }
 
     /// Deadlines only, two weeks out. Work blocks already show in the week strip.
+    /// Starred first (with days left), then the rest by day.
     private var dueSoonSection: some View {
-        let groups = Dictionary(grouping: data.dueSoon) { $0.dueDate! }.sorted { $0.key < $1.key }
+        let starredIds = Set(data.starred.map(\.id))
+        let rest = data.dueSoon.filter { !starredIds.contains($0.id) }
+        let groups = Dictionary(grouping: rest) { $0.dueDate! }.sorted { $0.key < $1.key }
         return VStack(alignment: .leading, spacing: WSSpace.xs) {
             SectionLabel("Due soon", trailing: "next 2 weeks")
                 .padding(.bottom, WSSpace.xs)
                 .padding(.top, 12)
-            if groups.isEmpty {
+            if !data.starred.isEmpty {
+                VStack(spacing: WSSpace.xs) {
+                    ForEach(data.starred) { task in
+                        StarredCard(task: task, today: today)
+                            .taskInteractions(task, order: data.starred.map(\.id))
+                    }
+                }
+                .padding(.bottom, WSSpace.xs)
+            }
+            if groups.isEmpty && data.starred.isEmpty {
                 Text("No deadlines in the next two weeks.")
                     .font(WSFont.body)
                     .foregroundStyle(WSColor.textTertiary)
@@ -459,6 +453,7 @@ struct TagMenu: View {
         }
         Toggle("Star Automatically", isOn: Binding(get: { tag.autoStar }, set: { model.setAutoStar(tag.id, $0) }))
         Button("Rename…") { model.renamingTag = tag }
+        Button("Manage Tags…") { model.showTagManager = true }
         Divider()
         Button("Delete Tag", role: .destructive) { model.deleteTag(tag.id) }
     }
@@ -548,6 +543,7 @@ private struct StarredCard: View {
             RoundedRectangle(cornerRadius: 1.5).fill(color.accent).frame(width: 3)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 5) {
+                    Image(systemName: "star.fill").font(.system(size: 9)).foregroundStyle(Color(hex: 0xD6A740))
                     Text(task.title)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(WSColor.textPrimary)
@@ -579,7 +575,7 @@ private struct StarredCard: View {
             }
         }
         .padding(.vertical, WSSpace.s).padding(.horizontal, WSSpace.s + 2)
-        .frame(width: 260, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: WSRadius.block).fill(WSColor.weekend))
         .overlay(RoundedRectangle(cornerRadius: WSRadius.block)
             .strokeBorder(model.isSelected(task.id) ? color.accent : WSColor.hairline))

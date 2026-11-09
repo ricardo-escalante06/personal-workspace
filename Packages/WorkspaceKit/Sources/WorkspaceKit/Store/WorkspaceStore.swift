@@ -215,12 +215,39 @@ public final class WorkspaceStore: Sendable {
                 t.deletedAt = now
                 try Self.save(&t, in: db)
             }
+            try Self.deleteOwnedRecords(of: ids, at: now, in: db)
             // Folders whose default list just disappeared fall back to "none".
             let folders = try Container.live().filter(ids.contains(Column("default_list_id"))).fetchAll(db)
             for var f in folders {
                 f.defaultListId = nil
                 try Self.save(&f, in: db)
             }
+        }
+    }
+
+    /// Term dates, project settings, board columns, event links and assignment series
+    /// belong to a container; they go when it goes (otherwise a deleted class's course
+    /// code would keep claiming calendar events).
+    static func deleteOwnedRecords(of containerIds: [UUID], at now: Date, in db: Database) throws {
+        func purge<R: SyncRecord>(_ type: R.Type) throws {
+            for var r in try R.live().filter(containerIds.contains(Column("container_id"))).fetchAll(db) {
+                r.deletedAt = now
+                try save(&r, in: db)
+            }
+        }
+        try purge(ClassTerm.self)
+        try purge(ProjectMeta.self)
+        try purge(BoardColumn.self)
+        try purge(EventLink.self)
+        try purge(AssignmentRule.self)
+    }
+
+    /// Cleans up records left behind by containers deleted before the cascade above existed.
+    public func pruneOrphanedRecords() throws {
+        try db.write { db in
+            let dead = try UUID.fetchAll(db, sql: "SELECT id FROM containers WHERE deleted_at IS NOT NULL")
+            guard !dead.isEmpty else { return }
+            try Self.deleteOwnedRecords(of: dead, at: Date(), in: db)
         }
     }
 

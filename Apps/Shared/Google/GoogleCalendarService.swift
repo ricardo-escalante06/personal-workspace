@@ -272,6 +272,76 @@ final class GoogleCalendarService {
         bump()
     }
 
+    /// Shifts every occurrence of `event`'s series by `delta` and gives them `duration`.
+    /// A move to another weekday also moves the repeat days (Mon/Wed → Tue/Thu).
+    func moveSeries(of event: ExternalEvent, delta: TimeInterval, duration: TimeInterval, dayShift: Int) async throws {
+        let loc = try location(event)
+        let master = caches[loc.email]?.events[loc.calendarId]?[loc.eventId]?.recurringEventId ?? loc.eventId
+        let path = "/calendars/\(Self.escape(loc.calendarId))/events/\(Self.escape(master))"
+        let data = try await request(loc.email, "GET", path)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let startString = (json["start"] as? [String: Any])?["dateTime"] as? String,
+              let start = ISODate.parse(startString) else { throw ServiceError.notConnected }
+        let newStart = start.addingTimeInterval(delta)
+        var body: [String: Any] = ["start": dateTimeJSON(newStart, allDay: false),
+                                   "end": dateTimeJSON(newStart.addingTimeInterval(duration), allDay: false)]
+        if dayShift != 0, let rules = json["recurrence"] as? [String] {
+            body["recurrence"] = rules.map { RecurrenceDays.shiftByDay(in: $0, by: dayShift) }
+        }
+        _ = try await request(loc.email, "PATCH", path, query: ["sendUpdates": "all"], body: body)
+        // Instances are re-expanded on the next sync.
+        await sync(email: loc.email)
+    }
+
+    /// "This and following": ends the series just before `event`, and (when moving)
+    /// starts a copy of it at `newStart`. `newStart == nil` deletes the rest.
+    func editFollowing(of event: ExternalEvent, newStart: Date?, newEnd: Date?, dayShift: Int) async throws {
+        let loc = try location(event)
+        let master = caches[loc.email]?.events[loc.calendarId]?[loc.eventId]?.recurringEventId ?? loc.eventId
+        let path = "/calendars/\(Self.escape(loc.calendarId))/events/\(Self.escape(master))"
+        let data = try await request(loc.email, "GET", path)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let startString = (json["start"] as? [String: Any])?["dateTime"] as? String,
+              let seriesStart = ISODate.parse(startString),
+              let rules = json["recurrence"] as? [String] else { throw ServiceError.notConnected }
+        // From the first occurrence, "this and following" is the whole series.
+        if abs(seriesStart.timeIntervalSince(event.start)) < 60 {
+            if let newStart, let newEnd {
+                try await moveSeries(of: event, delta: newStart.timeIntervalSince(event.start),
+                                     duration: newEnd.timeIntervalSince(newStart), dayShift: dayShift)
+            } else {
+                try await deleteSeries(of: event)
+            }
+            return
+        }
+        _ = try await request(loc.email, "PATCH", path, query: ["sendUpdates": "all"],
+                              body: ["recurrence": rules.map { RecurrenceDays.ending($0, before: event.start) }])
+        if let newStart, let newEnd {
+            var body: [String: Any] = ["start": dateTimeJSON(newStart, allDay: false),
+                                       "end": dateTimeJSON(newEnd, allDay: false),
+                                       "recurrence": rules.map { RecurrenceDays.shiftByDay(in: $0, by: dayShift) }]
+            for key in ["summary", "description", "location", "colorId", "reminders", "attendees", "visibility", "transparency"] {
+                if let v = json[key] { body[key] = v }
+            }
+            _ = try await request(loc.email, "POST", "/calendars/\(Self.escape(loc.calendarId))/events",
+                                  query: ["sendUpdates": "all"], body: body)
+        }
+        await sync(email: loc.email)
+    }
+
+    /// Deletes the whole recurring series `event` is an instance of.
+    func deleteSeries(of event: ExternalEvent) async throws {
+        let loc = try location(event)
+        let master = caches[loc.email]?.events[loc.calendarId]?[loc.eventId]?.recurringEventId ?? loc.eventId
+        _ = try await request(loc.email, "DELETE", "/calendars/\(Self.escape(loc.calendarId))/events/\(Self.escape(master))",
+                              query: ["sendUpdates": "all"])
+        let remaining = caches[loc.email]?.events[loc.calendarId]?
+            .filter { $0.key != master && $0.value.recurringEventId != master }
+        caches[loc.email]?.events[loc.calendarId] = remaining
+        if let cache = caches[loc.email] { Self.saveCache(cache, loc.email) }
+        bump()
+    }
+
     /// Yes / No / Maybe on an invitation.
     func respond(_ event: ExternalEvent, _ response: EventAttendee.Response) async throws {
         let loc = try location(event)

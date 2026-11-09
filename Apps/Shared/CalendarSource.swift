@@ -259,6 +259,74 @@ final class CalendarSource {
         }
     }
 
+    /// Moves `event` (one occurrence, it and the ones after, or the whole series).
+    func move(_ event: ExternalEvent, start: Date, end: Date, scope: EventEditScope) async throws {
+        guard event.isRecurring, scope != .one else { return try await move(event, start: start, end: end) }
+        if scope == .all { return try await moveSeries(event, start: start, end: end) }
+        let cal = Calendar.current
+        let dayShift = cal.dateComponents([.day], from: cal.startOfDay(for: event.start), to: cal.startOfDay(for: start)).day ?? 0
+        if event.provider == .google {
+            guard let google else { throw WriteError.noGoogle }
+            try await google.editFollowing(of: event, newStart: start, newEnd: end, dayShift: dayShift)
+            return
+        }
+        guard let e = findEvent(event) else { throw WriteError.notFound }
+        guard e.calendar.allowsContentModifications else { throw WriteError.readOnly }
+        e.startDate = start
+        e.endDate = end
+        Self.shiftRepeatDays(e, by: dayShift)
+        try store.save(e, span: .futureEvents, commit: true)
+    }
+
+    /// Deletes one occurrence, it and the ones after, or the whole series.
+    func delete(_ event: ExternalEvent, scope: EventEditScope) async throws {
+        guard event.isRecurring, scope != .one else { return try await delete(event) }
+        if event.provider == .google {
+            guard let google else { throw WriteError.noGoogle }
+            if scope == .all { try await google.deleteSeries(of: event) }
+            else { try await google.editFollowing(of: event, newStart: nil, newEnd: nil, dayShift: 0) }
+            return
+        }
+        let target = scope == .all ? (store.event(withIdentifier: event.localId) ?? findEvent(event)) : findEvent(event)
+        guard let e = target else { throw WriteError.notFound }
+        guard e.calendar.allowsContentModifications else { throw WriteError.readOnly }
+        try store.remove(e, span: .futureEvents, commit: true)
+    }
+
+    private static func shiftRepeatDays(_ e: EKEvent, by dayShift: Int) {
+        guard dayShift != 0, let rule = e.recurrenceRules?.first, let days = rule.daysOfTheWeek, !days.isEmpty else { return }
+        let shifted = days.map { d in
+            EKRecurrenceDayOfWeek(EKWeekday(rawValue: RecurrenceDays.shift(d.dayOfTheWeek.rawValue, by: dayShift))!)
+        }
+        e.removeRecurrenceRule(rule)
+        e.addRecurrenceRule(EKRecurrenceRule(
+            recurrenceWith: rule.frequency, interval: rule.interval, daysOfTheWeek: shifted,
+            daysOfTheMonth: rule.daysOfTheMonth, monthsOfTheYear: rule.monthsOfTheYear,
+            weeksOfTheYear: rule.weeksOfTheYear, daysOfTheYear: rule.daysOfTheYear,
+            setPositions: rule.setPositions, end: rule.recurrenceEnd))
+    }
+
+    /// Moves a repeating event's whole series by the same amount `event` moved.
+    func moveSeries(_ event: ExternalEvent, start: Date, end: Date) async throws {
+        let delta = start.timeIntervalSince(event.start)
+        let duration = end.timeIntervalSince(start)
+        let cal = Calendar.current
+        let dayShift = cal.dateComponents([.day], from: cal.startOfDay(for: event.start), to: cal.startOfDay(for: start)).day ?? 0
+        if event.provider == .google {
+            guard let google else { throw WriteError.noGoogle }
+            try await google.moveSeries(of: event, delta: delta, duration: duration, dayShift: dayShift)
+            return
+        }
+        // EventKit hands back the first occurrence for the series' identifier.
+        guard let first = store.event(withIdentifier: event.localId) ?? findEvent(event) else { throw WriteError.notFound }
+        guard first.calendar.allowsContentModifications else { throw WriteError.readOnly }
+        let newStart = first.startDate.addingTimeInterval(delta)
+        first.startDate = newStart
+        first.endDate = newStart.addingTimeInterval(duration)
+        Self.shiftRepeatDays(first, by: dayShift)
+        try store.save(first, span: .futureEvents, commit: true)
+    }
+
     func move(_ event: ExternalEvent, start: Date, end: Date) async throws {
         if event.provider == .google {
             guard let google else { throw WriteError.noGoogle }
@@ -281,6 +349,39 @@ final class CalendarSource {
         guard let e = findEvent(event) else { throw WriteError.notFound }
         guard e.calendar.allowsContentModifications else { throw WriteError.readOnly }
         try store.remove(e, span: .thisEvent, commit: true)
+    }
+
+    /// Deletes a class meeting's weekly series: recurring events titled `title` that
+    /// start at `minute` past midnight on one of `weekdays` between `from` and `to`.
+    /// Returns how many series were removed.
+    @discardableResult
+    func deleteMeetingSeries(title: String, minute: Int, weekdays: Set<Int>, from: Date, to: Date) async throws -> Int {
+        let cal = Calendar.current
+        let matches = events(from: from, to: to).filter { e in
+            let c = cal.dateComponents([.hour, .minute, .weekday], from: e.start)
+            return e.isRecurring && e.title == title
+                && (c.hour ?? 0) * 60 + (c.minute ?? 0) == minute
+                && weekdays.contains(c.weekday ?? 0)
+        }
+        var removed = 0
+        // Google: one DELETE per series (instances share a master event).
+        var seen = Set<String>()
+        for e in matches where e.provider == .google {
+            guard let google else { throw WriteError.noGoogle }
+            let key = e.calendarId + "|" + e.title
+            guard seen.insert(key).inserted else { continue }
+            try await google.deleteSeries(of: e)
+            removed += 1
+        }
+        // System calendars: remove the earliest occurrence with "this and future".
+        let system = Dictionary(grouping: matches.filter { $0.provider != .google }, by: \.localId)
+        for (_, occurrences) in system {
+            guard let first = occurrences.min(by: { $0.start < $1.start }), let e = findEvent(first) else { continue }
+            guard e.calendar.allowsContentModifications else { throw WriteError.readOnly }
+            try store.remove(e, span: .futureEvents, commit: true)
+            removed += 1
+        }
+        return removed
     }
 
     func respond(_ event: ExternalEvent, _ response: EventAttendee.Response) async throws {
@@ -413,4 +514,9 @@ final class CalendarSource {
         func byte(_ v: CGFloat) -> UInt32 { UInt32(max(0, min(255, (v * 255).rounded()))) }
         return byte(c[0]) << 16 | byte(c[1]) << 8 | byte(c[2])
     }
+}
+
+/// For repeating events: which occurrences an edit or delete applies to.
+enum EventEditScope {
+    case one, following, all
 }

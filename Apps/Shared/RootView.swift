@@ -42,6 +42,12 @@ struct RootView: View {
         .toolbar {
             ToolbarItem { SyncStatusView() }
             ToolbarItem {
+                Button { model.showTagManager = true } label: {
+                    Label("Tags", systemImage: "tag")
+                }
+                .help("Manage tags")
+            }
+            ToolbarItem {
                 Button { model.toggleInspector() } label: {
                     Label("Details", systemImage: "sidebar.right")
                 }
@@ -79,6 +85,7 @@ struct RootView: View {
         .sheet(item: $model.containerEditor) { request in
             ContainerEditorSheet(request: request)
         }
+        .sheet(isPresented: $model.showTagManager) { TagManagerView() }
         .sheet(item: $model.seriesEditor) { request in
             AssignmentSeriesSheet(request: request)
         }
@@ -123,6 +130,11 @@ private struct RootDialogs: ViewModifier {
             } message: {
                 Text(model.errorMessage ?? "")
             }
+            .alert("Done", isPresented: .constant(model.notice != nil)) {
+                Button("OK") { model.notice = nil }
+            } message: {
+                Text(model.notice ?? "")
+            }
     }
 }
 
@@ -149,21 +161,29 @@ private struct EventDialogs: ViewModifier {
         content
             .confirmationDialog(
                 model.pendingEventMove?.title ?? "Move event?",
-                isPresented: Binding(get: { model.pendingEventMove != nil }, set: { if !$0 { model.pendingEventMove = nil } }),
+                isPresented: Binding(get: { model.pendingEventMove != nil }, set: { if !$0 { model.cancelEventMove() } }),
                 titleVisibility: .visible
             ) {
-                Button(model.pendingEventMove.map { $0.moves.count > 1 ? "Move Events" : "Move Event" } ?? "Move") { model.confirmEventMove() }
-                Button("Cancel", role: .cancel) { model.pendingEventMove = nil }
+                Button("Only This Event") { model.confirmEventMove(.one) }
+                Button("This and Following Events") { model.confirmEventMove(.following) }
+                Button("All Events") { model.confirmEventMove(.all) }
+                Button("Cancel", role: .cancel) { model.cancelEventMove() }
             } message: {
-                Text("This updates \(model.pendingEventMove?.calendars ?? "the calendar") (for Google calendars, Google Calendar too).")
+                Text("Change just this one, this one and the ones after it, or every time it repeats?")
             }
             .confirmationDialog(
                 deleteTitle,
                 isPresented: Binding(get: { !model.pendingEventDelete.isEmpty }, set: { if !$0 { model.pendingEventDelete = [] } }),
                 titleVisibility: .visible
             ) {
-                Button(model.pendingEventDelete.count == 1 ? "Delete Event" : "Delete Events", role: .destructive) {
-                    model.confirmEventDelete()
+                if model.pendingEventDelete.contains(where: \.isRecurring) {
+                    Button("Delete Only This Event", role: .destructive) { model.confirmEventDelete(.one) }
+                    Button("Delete This and Following", role: .destructive) { model.confirmEventDelete(.following) }
+                    Button("Delete All Events", role: .destructive) { model.confirmEventDelete(.all) }
+                } else {
+                    Button(model.pendingEventDelete.count == 1 ? "Delete Event" : "Delete Events", role: .destructive) {
+                        model.confirmEventDelete()
+                    }
                 }
                 Button("Cancel", role: .cancel) { model.pendingEventDelete = [] }
             } message: {

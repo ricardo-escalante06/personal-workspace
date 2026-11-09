@@ -57,18 +57,20 @@ import Testing
         #expect(try seriesTasks(store, rule.id).map(\.title) == ["HW 1"])
     }
 
-    @Test func starredIncludesAutoStarTagsUntilTheyPass() throws {
+    @Test func starredShowsOnlyTheNextTwoWeeks() throws {
         let exam = UUID()
         let now = LocalDate(year: 2026, month: 11, day: 9).startOfDay(in: utc).addingTimeInterval(3600 * 12)
         let tasks = [
             TaskItem(containerId: nil, title: "Midterm 2", categoryId: exam, dueDate: LocalDate(year: 2026, month: 11, day: 19)),
             TaskItem(containerId: nil, title: "Old quiz", categoryId: exam, dueDate: LocalDate(year: 2026, month: 11, day: 1)),
-            TaskItem(containerId: nil, title: "Visa form", isStarred: true),
+            TaskItem(containerId: nil, title: "Visa form", isStarred: true),  // no date: not shown
+            TaskItem(containerId: nil, title: "Final", categoryId: exam, dueDate: LocalDate(year: 2026, month: 12, day: 15)),  // > 2 weeks
+            TaskItem(containerId: nil, title: "Essay", dueDate: LocalDate(year: 2026, month: 11, day: 9), isStarred: true),
             TaskItem(containerId: nil, title: "HW 4", dueDate: LocalDate(year: 2026, month: 11, day: 10)),
         ]
         let data = Dashboard.build(tasks: tasks, blocks: [], weekStart: LocalDate(year: 2026, month: 11, day: 8),
                                    now: now, timeZone: utc, autoStarCategories: [exam])
-        #expect(data.starred.map(\.title) == ["Midterm 2", "Visa form"])
+        #expect(data.starred.map(\.title) == ["Essay", "Midterm 2"])
     }
 
     @Test func unknownHashtagBecomesANewTag() throws {

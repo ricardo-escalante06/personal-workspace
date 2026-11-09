@@ -205,19 +205,15 @@ public enum Dashboard {
                 return a.title.localizedStandardCompare(b.title) == .orderedAscending
             }
 
+        // Starred (or auto-starred, like Exam) and due in the same two weeks as Due soon.
         let starred = liveTasks
             .filter { t in
                 !t.status.isClosed && (t.isStarred || t.categoryId.map(autoStarCategories.contains) == true)
-                    // Past auto-starred exams drop off; ones you starred by hand stay until done.
-                    && (t.isStarred || (t.dueDate.map { $0 >= today } ?? true))
+                    && (t.dueDate.map { $0 >= today && $0 <= dueSoonEnd } ?? false)
             }
             .sorted { a, b in
-                switch (a.dueDate, b.dueDate) {
-                case let (x?, y?) where x != y: return x < y
-                case (_?, nil): return true
-                case (nil, _?): return false
-                default: return a.title.localizedStandardCompare(b.title) == .orderedAscending
-                }
+                if a.dueDate != b.dueDate { return a.dueDate! < b.dueDate! }
+                return a.title.localizedStandardCompare(b.title) == .orderedAscending
             }
 
         // Week strip.

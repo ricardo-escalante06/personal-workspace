@@ -47,6 +47,9 @@ struct ClassSetup: Equatable {
 struct ClassScheduleEditor: View {
     @Environment(AppModel.self) private var model
     @Binding var setup: ClassSetup
+    /// The class being edited (nil while creating one).
+    var containerId: UUID? = nil
+    @State private var removing: MeetingDraft?
 
     private static let dayLetters = [(1, "S"), (2, "M"), (3, "T"), (4, "W"), (5, "T"), (6, "F"), (7, "S")]
 
@@ -87,6 +90,13 @@ struct ClassScheduleEditor: View {
                 }
             }
         }
+        .confirmationDialog("Remove this meeting?", isPresented: Binding(
+            get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible) {
+            Button("Remove Meeting", role: .destructive) { if let m = removing { remove(m) } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This deletes its weekly event from your calendar for the whole term.")
+        }
     }
 
     private func meetingRow(_ meeting: Binding<MeetingDraft>) -> some View {
@@ -120,7 +130,11 @@ struct ClassScheduleEditor: View {
                 if m.created {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(ContainerColor.green.accent)
-                        .help("Already in your calendar. Edit or delete it there.")
+                        .help("In your calendar as a weekly event")
+                    Button { removing = m } label: { Image(systemName: "trash") }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(WSColor.textTertiary)
+                        .help("Remove this meeting and its weekly calendar event")
                 } else {
                     Button { setup.meetings.removeAll { $0.id == m.id } } label: { Image(systemName: "xmark") }
                         .buttonStyle(.borderless)
@@ -133,6 +147,14 @@ struct ClassScheduleEditor: View {
         }
         .padding(WSSpace.s)
         .background(RoundedRectangle(cornerRadius: WSRadius.block).fill(WSColor.canvas))
+    }
+
+    private func remove(_ m: MeetingDraft) {
+        let code = setup.code.trimmingCharacters(in: .whitespaces)
+        let type = m.type.trimmingCharacters(in: .whitespaces)
+        setup.meetings.removeAll { $0.id == m.id }
+        model.removeMeeting(m, title: type.isEmpty ? code : "\(code) \(type)",
+                            termStart: setup.termStart, termEnd: setup.termEnd, from: containerId)
     }
 
     private func timePicker(_ time: Binding<LocalTime>) -> some View {
@@ -208,6 +230,24 @@ extension AppModel {
         }
     }
 
+    /// Deletes a meeting's weekly calendar series, then forgets the meeting.
+    func removeMeeting(_ m: MeetingDraft, title: String, termStart: Date, termEnd: Date, from containerId: UUID?) {
+        let from = termStart.addingTimeInterval(-7 * 86_400)
+        let to = termEnd.addingTimeInterval(8 * 86_400)
+        runCalendar { [weak self] source in
+            let n = try await source.deleteMeetingSeries(title: title, minute: m.start.secondsSinceMidnight / 60,
+                                                         weekdays: m.weekdays, from: from, to: to)
+            if let containerId {
+                try self?.update(containerId) { c in
+                    c.settings = ClassSetup.settings(c.settings, with: ClassSetup.meetings(from: c.settings).filter { $0.id != m.id })
+                }
+            }
+            if n == 0 {
+                self?.notice = "Removed the meeting. Its calendar event (“\(title)”) wasn't found. If it's still there, delete it from your calendar."
+            }
+        }
+    }
+
     private func markMeetingCreated(_ meetingId: UUID, in containerId: UUID) throws {
         try update(containerId) { c in
             var meetings = ClassSetup.meetings(from: c.settings)
@@ -229,7 +269,7 @@ extension AppModel {
         return setup
     }
 
-    private func update(_ containerId: UUID, _ change: (inout Container) -> Void) throws {
+    func update(_ containerId: UUID, _ change: (inout Container) -> Void) throws {
         try store.update(Container.self, containerId, change)
     }
 }

@@ -45,6 +45,8 @@ targets:
         LSApplicationCategoryType: public.app-category.productivity
         NSCalendarsFullAccessUsageDescription: Workspace shows your calendar events (including Google Calendar) next to your tasks, and lets you move events you can edit.
         NSCalendarsUsageDescription: Workspace shows your calendar events next to your tasks.
+        NSRemindersFullAccessUsageDescription: Workspace can import your Apple Reminders as tasks.
+        NSRemindersUsageDescription: Workspace can import your Apple Reminders as tasks.
         SupabaseHost: $(SUPABASE_HOST)
         SupabaseAnonKey: $(SUPABASE_ANON_KEY)
         GoogleClientID: $(GOOGLE_CLIENT_ID)
@@ -84,6 +86,8 @@ targets:
         UILaunchScreen: {}
         NSCalendarsFullAccessUsageDescription: Workspace shows your calendar events (including Google Calendar) next to your tasks, and lets you move events you can edit.
         NSCalendarsUsageDescription: Workspace shows your calendar events next to your tasks.
+        NSRemindersFullAccessUsageDescription: Workspace can import your Apple Reminders as tasks.
+        NSRemindersUsageDescription: Workspace can import your Apple Reminders as tasks.
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         SupabaseHost: $(SUPABASE_HOST)
         SupabaseAnonKey: $(SUPABASE_ANON_KEY)

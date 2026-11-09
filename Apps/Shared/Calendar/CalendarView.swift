@@ -80,7 +80,8 @@ struct CalendarView: View {
         }
         .background(WSColor.canvas)
         .task(id: LoadKey(days: days, scope: model.calendarScope, revision: source.revision,
-                          hidden: source.effectiveHiddenCalendarIds, access: source.access)) {
+                          hidden: source.effectiveHiddenCalendarIds, access: source.access,
+                          overrides: model.eventOverrides)) {
             await load()
         }
         // While the calendar is open, ask macOS to pull Google/iCloud changes every minute.
@@ -150,12 +151,13 @@ struct CalendarView: View {
         var revision: Int
         var hidden: Set<String>
         var access: CalendarSource.Access
+        var overrides: [String: AppModel.EventOverride]
     }
 
     /// Loads events from EventKit for the range, then keeps task data live via GRDB.
     private func load() async {
         let (start, end) = range
-        let events = source.events(from: start, to: end)
+        let events = model.applyingOverrides(source.events(from: start, to: end))
         var options = CalendarQuery.Options()
         options.hiddenCalendars = source.effectiveHiddenCalendarIds
         let scope = model.calendarScope
@@ -408,7 +410,7 @@ struct CalendarView: View {
             }
         }
         if !eventMoves.isEmpty {
-            model.pendingEventMove = PendingEventMove(moves: eventMoves)
+            model.requestEventMoves(eventMoves)
         }
     }
 }
@@ -430,8 +432,9 @@ struct PendingEventMove: Identifiable {
     var moves: [Move]
 
     var title: String {
-        moves.count == 1 ? "Move “\(moves[0].event.title)”?" : "Move \(moves.count) events?"
+        moves.count == 1 ? "“\(moves[0].event.title)” repeats" : "Some of these events repeat"
     }
+    var hasRepeating: Bool { moves.contains { $0.event.isRecurring } }
     var calendars: String {
         Set(moves.map(\.event.calendarTitle)).sorted().joined(separator: ", ")
     }

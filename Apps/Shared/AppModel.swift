@@ -70,6 +70,9 @@ final class AppModel {
     /// A drag of a Google/system event waiting for confirmation ("This updates Google Calendar").
     var pendingEventMove: PendingEventMove?
     var pendingEventDelete: [ExternalEvent] = []
+    /// Event moves/deletes that are saving (or waiting on "This / Following / All").
+    enum EventOverride: Hashable { case moved(Date, Date), deleted }
+    var eventOverrides: [String: EventOverride] = [:]
     /// Account the "New Calendar" prompt is open for.
     var newCalendarAccount: String?
     var pendingCalendarDelete: CalendarSource.CalendarInfo?
@@ -82,9 +85,12 @@ final class AppModel {
         selection = .calendar
     }
     var errorMessage: String?
+    /// A one-off informational message (shown as an alert).
+    var notice: String?
 
     // Dashboard / editing state
     private(set) var categories: [TaskCategory] = []
+    var showTagManager = false
     /// Tag whose rename prompt is open.
     var renamingTag: TaskCategory?
     /// Class whose assignment-series sheet is open (and the series being edited, if any).
@@ -143,6 +149,7 @@ final class AppModel {
         // Debug aid: `--calendar` opens on the Calendar page.
         if ProcessInfo.processInfo.arguments.contains("--calendar") { selection = .calendar }
         try? store.ensureBuiltInCategories()
+        try? store.pruneOrphanedRecords()
         observe()
         Task { await restoreSession() }
     }
@@ -807,7 +814,7 @@ final class AppModel {
     }
 
     func updateEvent(_ event: ExternalEvent, start: Date, end: Date) {
-        runCalendar { try await $0.move(event, start: start, end: end) }
+        requestEventMoves([.init(event: event, start: start, end: end)])
     }
 
     /// Yes / No / Maybe on a Google invitation.
@@ -855,19 +862,78 @@ final class AppModel {
         runCalendar { try await $0.create(title: title, start: start, end: end, calendarId: calendarId) }
     }
 
-    func confirmEventMove() {
-        guard let pending = pendingEventMove else { return }
-        pendingEventMove = nil
-        runCalendar { source in
-            for m in pending.moves { try await source.move(m.event, start: m.start, end: m.end) }
+    /// Event drags and edits apply right away; only repeating events ask
+    /// "Only This Event / All Events" first.
+    func requestEventMoves(_ moves: [PendingEventMove.Move]) {
+        // Show them where they were dropped right away (even while the question is up).
+        for m in moves { eventOverrides[m.event.key] = .moved(m.start, m.end) }
+        let pending = PendingEventMove(moves: moves)
+        if pending.hasRepeating {
+            pendingEventMove = pending
+        } else {
+            commitEventMoves(moves, scope: .one)
         }
     }
 
-    func confirmEventDelete() {
+    func confirmEventMove(_ scope: EventEditScope) {
+        guard let pending = pendingEventMove else { return }
+        pendingEventMove = nil
+        commitEventMoves(pending.moves, scope: scope)
+    }
+
+    func cancelEventMove() {
+        for m in pendingEventMove?.moves ?? [] { eventOverrides[m.event.key] = nil }
+        pendingEventMove = nil
+    }
+
+    private func commitEventMoves(_ moves: [PendingEventMove.Move], scope: EventEditScope) {
+        let keys = moves.map(\.event.key)
+        let source = calendarSource
+        Task {
+            do {
+                for m in moves { try await source.move(m.event, start: m.start, end: m.end, scope: scope) }
+                // Let the calendar reload with the saved times before dropping the stand-ins.
+                try? await Task.sleep(for: .seconds(2))
+            } catch GoogleAuth.AuthError.cancelled {
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            for k in keys { eventOverrides[k] = nil }
+        }
+    }
+
+    func confirmEventDelete(_ scope: EventEditScope = .one) {
         let events = pendingEventDelete
         pendingEventDelete = []
-        runCalendar { source in for e in events { try await source.delete(e) } }
+        for e in events { eventOverrides[e.key] = .deleted }
+        let source = calendarSource
+        Task {
+            do {
+                for e in events { try await source.delete(e, scope: scope) }
+                try? await Task.sleep(for: .seconds(2))
+            } catch GoogleAuth.AuthError.cancelled {
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            for e in events { eventOverrides[e.key] = nil }
+        }
         if let inspected = inspectedEvent, events.contains(where: { $0.key == inspected.key }) { inspectedEvent = nil }
+    }
+
+    /// Applies in-flight moves/deletes so the calendar doesn't jump back while saving.
+    func applyingOverrides(_ events: [ExternalEvent]) -> [ExternalEvent] {
+        guard !eventOverrides.isEmpty else { return events }
+        return events.compactMap { e in
+            switch eventOverrides[e.key] {
+            case nil: return e
+            case .deleted: return nil
+            case .moved(let start, let end):
+                var e = e
+                e.start = start
+                e.end = end
+                return e
+            }
+        }
     }
 
     /// Delete key on the calendar: blocks are removed (⌘Z restores), deadlines lose their

@@ -15,6 +15,11 @@ struct ContainerEditorSheet: View {
     @State private var classSetup = ClassSetup()
     @FocusState private var nameFocused: Bool
 
+    private var editingId: UUID? {
+        if case .edit(let c) = request.mode { return c.id }
+        return nil
+    }
+
     private var isCreate: Bool {
         if case .create = request.mode { return true }
         return false
@@ -97,7 +102,7 @@ struct ContainerEditorSheet: View {
 
             if kind == .class {
                 Divider()
-                ClassScheduleEditor(setup: $classSetup)
+                ClassScheduleEditor(setup: $classSetup, containerId: editingId)
             }
 
             HStack {

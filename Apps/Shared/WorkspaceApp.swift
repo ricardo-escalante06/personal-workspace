@@ -24,6 +24,8 @@ struct WorkspaceApp: App {
                     .keyboardShortcut("n")
                 Button("Go to…") { model.showPalette = true }
                     .keyboardShortcut("k")
+                Button("Manage Tags…") { model.showTagManager = true }
+                    .keyboardShortcut("t", modifiers: [.command, .shift])
                 Divider()
                 Button("Sync Now") { Task { await model.syncNow() } }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
@@ -59,6 +61,9 @@ struct WorkspaceApp: App {
             }
             CommandMenu("Debug") {
                 Button("Load Sample Data") { model.loadSampleData() }
+                Divider()
+                Button("Read Apple Reminders") { model.exportReminders() }
+                Button("Apply Setup Plan") { model.applySetupPlan() }
             }
         }
         #endif

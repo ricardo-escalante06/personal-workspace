@@ -88,6 +88,9 @@ struct TaskInspector: View {
                     Button { newTagName = ""; showNewTag = true } label: { Image(systemName: "plus") }
                         .buttonStyle(.borderless)
                         .help("New tag")
+                    Button { model.showTagManager = true } label: { Image(systemName: "slider.horizontal.3") }
+                        .buttonStyle(.borderless)
+                        .help("Manage tags")
                 }
                 .alert("New Tag", isPresented: $showNewTag) {
                     TextField("Name", text: $newTagName)
