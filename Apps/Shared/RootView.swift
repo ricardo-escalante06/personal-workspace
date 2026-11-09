@@ -1,13 +1,11 @@
-import GRDB
 import SwiftUI
 import WorkspaceKit
 import WorkspaceUI
 
-/// Milestone 0 shell: sidebar tree, a simple scoped task list, account + sync.
-/// The real dashboard arrives in Milestone 1.
+/// Main window: sidebar tree · scoped dashboard · task inspector.
 struct RootView: View {
     @Environment(AppModel.self) private var model
-    @State private var showTokens = false
+    @Environment(\.undoManager) private var undoManager
 
     var body: some View {
         @Bindable var model = model
@@ -15,23 +13,54 @@ struct RootView: View {
             Sidebar()
                 .navigationSplitViewColumnWidth(min: 220, ideal: 250)
         } detail: {
-            if showTokens {
-                TokenGallery()
-            } else {
-                ScopeTaskList(scope: model.selectedScope)
-            }
+            DashboardView(scope: model.selectedScope, store: model.store, weekStart: model.weekStart)
+                .id(model.selectedScope)
+                .inspector(isPresented: $model.showInspector) {
+                    Group {
+                        if let id = model.selectedTaskId {
+                            TaskInspector(taskId: id)
+                        } else {
+                            ContentUnavailableView("Select a task", systemImage: "sidebar.right",
+                                                   description: Text("Click any task to see its details."))
+                        }
+                    }
+                    .inspectorColumnWidth(min: 300, ideal: 340, max: 460)
+                }
         }
         .toolbar {
-            ToolbarItem {
-                Toggle(isOn: $showTokens) { Label("Tokens", systemImage: "swatchpalette") }
-                    .help("Show design tokens")
-            }
             ToolbarItem { SyncStatusView() }
+            ToolbarItem {
+                Button { model.toggleInspector() } label: {
+                    Label("Details", systemImage: "sidebar.right")
+                }
+                .help("Show details (⌘I)")
+            }
+        }
+        .sheet(item: $model.quickAdd) { request in
+            QuickAddView(request: request, scope: model.selectedScope)
+        }
+        .sheet(isPresented: $model.showPalette) {
+            CommandPalette()
+        }
+        .overlay(alignment: .bottom) { ToastView() }
+        .animation(.smooth(duration: 0.25), value: model.toast?.id)
+        .onAppear { model.undoManager = undoManager }
+        .onChange(of: undoManager) { _, manager in model.undoManager = manager }
+        .background {
+            // Esc hides the details panel (zero-size button so the shortcut stays active).
+            Button("") { model.setInspector(visible: false) }
+                .keyboardShortcut(.escape, modifiers: [])
+                .disabled(!model.showInspector)
+                .opacity(0)
+                .frame(width: 0, height: 0)
         }
         .alert("Something went wrong", isPresented: .constant(model.errorMessage != nil)) {
             Button("OK") { model.errorMessage = nil }
         } message: {
             Text(model.errorMessage ?? "")
+        }
+        .sheet(item: $model.containerEditor) { request in
+            ContainerEditorSheet(request: request)
         }
     }
 }
@@ -46,6 +75,9 @@ private struct Sidebar: View {
         List(selection: $model.selection) {
             Label("All Workspace", systemImage: "square.grid.2x2")
                 .tag(SidebarItem.allWorkspace)
+                .dropDestination(for: String.self) { ids, _ in
+                    moveToTop(ids)
+                }
 
             Section("Workspace") {
                 if model.tree.isEmpty {
@@ -56,13 +88,40 @@ private struct Sidebar: View {
                 OutlineGroup(model.tree, children: \.childrenOrNil) { node in
                     SidebarRow(container: node.container)
                         .tag(SidebarItem.container(node.id))
-                        .contextMenu { ContainerMenu(parent: node.container) }
+                        .contextMenu { ContainerMenu(container: node.container) }
+                        .draggable("container-\(node.id.uuidString)")
+                        .dropDestination(for: String.self) { ids, _ in
+                            drop(ids, onto: node.container)
+                        }
                 }
             }
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) { AccountFooter() }
-        .contextMenu { ContainerMenu(parent: nil) }
+        .contextMenu { NewContainerMenu(parent: nil) }
+    }
+
+    private func containerId(from payload: String) -> UUID? {
+        guard payload.hasPrefix("container-") else { return nil }
+        return UUID(uuidString: String(payload.dropFirst("container-".count)))
+    }
+
+    private func drop(_ payloads: [String], onto target: Container) -> Bool {
+        guard let payload = payloads.first else { return false }
+        if let id = containerId(from: payload) {
+            return model.dropContainer(id, onto: target.id)
+        }
+        // A task dragged from the dashboard onto a list/class/project moves it there.
+        if payload.hasPrefix("due-"), let taskId = UUID(uuidString: String(payload.dropFirst(4))), target.kind.holdsTasks {
+            model.editTask(taskId) { $0.containerId = target.id }
+            return true
+        }
+        return false
+    }
+
+    private func moveToTop(_ payloads: [String]) -> Bool {
+        guard let id = payloads.first.flatMap(containerId(from:)) else { return false }
+        return model.dropContainer(id, onto: nil)
     }
 }
 
@@ -79,7 +138,7 @@ private struct SidebarRow: View {
     }
 }
 
-private struct ContainerMenu: View {
+private struct NewContainerMenu: View {
     @Environment(AppModel.self) private var model
     let parent: Container?
 
@@ -88,69 +147,61 @@ private struct ContainerMenu: View {
         ForEach(kinds, id: \.self) { kind in
             Button("New \(kind.displayName)") { model.createContainer(kind, under: parent?.id) }
         }
-        if let parent {
-            Divider()
-            Button("Delete \(parent.name)", role: .destructive) { model.delete(parent.id) }
-        }
     }
 }
 
-// MARK: - Scoped task list (placeholder for the Milestone 1 dashboard)
-
-private struct ScopeTaskList: View {
+private struct ContainerMenu: View {
     @Environment(AppModel.self) private var model
-    let scope: UUID?
-    @State private var tasks: [TaskItem] = []
+    let container: Container
 
     var body: some View {
-        let crumbs = scope.map { ContainerTree.breadcrumb(for: $0, in: model.containers) } ?? []
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: WSSpace.xs) {
-                Text(crumbs.dropLast().map(\.name).joined(separator: " › "))
-                    .font(WSFont.metric)
-                    .foregroundStyle(WSColor.textSecondary)
-                Text(crumbs.last?.name ?? "All Workspace")
-                    .font(WSFont.pageTitle)
-                    .foregroundStyle(WSColor.textPrimary)
-                Text("\(tasks.filter { $0.status != .done }.count) open · \(tasks.filter { $0.status == .done }.count) done")
-                    .font(WSFont.metric)
-                    .foregroundStyle(WSColor.textSecondary)
-            }
-            .padding(WSSpace.xl)
-
-            List(tasks) { task in
-                HStack(spacing: WSSpace.s) {
-                    Button { model.toggleDone(task) } label: {
-                        Image(systemName: task.status == .done ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(color(for: task).accent)
-                    }
-                    .buttonStyle(.plain)
-                    Text(task.title)
-                        .font(WSFont.rowTitle)
-                        .strikethrough(task.status == .done)
-                        .foregroundStyle(task.status == .done ? WSColor.textTertiary : WSColor.textPrimary)
-                    Spacer()
-                    if let due = task.dueDate {
-                        Text(due.description + (task.dueTime.map { " \($0.description.prefix(5))" } ?? ""))
-                            .font(WSFont.metric)
-                            .foregroundStyle(WSColor.textSecondary)
+        NewContainerMenu(parent: container)
+        Divider()
+        Button("Edit…") { model.editContainer(container) }
+        Menu("Color") {
+            ForEach(ContainerColor.allCases) { color in
+                Button {
+                    model.setColor(container.id, color.rawValue)
+                } label: {
+                    Label {
+                        Text(color.displayName + (container.color == color.rawValue ? "  ✓" : ""))
+                    } icon: {
+                        ColorSwatchImage.image(for: color)
                     }
                 }
             }
-            .scrollContentBackground(.hidden)
         }
-        .background(WSColor.canvas)
-        .task(id: scope) {
-            let observation = ValueObservation.tracking { db in
-                try ScopeQuery.tasks(in: scope).fetchAll(db)
-            }
-            do {
-                for try await value in observation.values(in: model.store.db) { tasks = value }
-            } catch {}
+        if container.parentId != nil {
+            Button("Move to Top Level") { _ = model.dropContainer(container.id, onto: nil) }
         }
+        Divider()
+        Button("Delete \(container.name)", role: .destructive) { model.delete(container.id) }
     }
+}
 
-    private func color(for task: TaskItem) -> ContainerColor {
-        ContainerColor(named: model.container(task.containerId)?.color ?? "grey")
+// MARK: - Toast
+
+private struct ToastView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        if let toast = model.toast {
+            HStack(spacing: WSSpace.m) {
+                Text(toast.message)
+                    .foregroundStyle(WSColor.textPrimary)
+                    .lineLimit(1)
+                Button("Undo") { model.undoToast() }
+                    .buttonStyle(.plain)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(WSColor.action)
+            }
+            .font(.system(size: 13))
+            .padding(.horizontal, WSSpace.l).padding(.vertical, WSSpace.s + 2)
+            .background(RoundedRectangle(cornerRadius: WSRadius.popover).fill(WSColor.raised))
+            .overlay(RoundedRectangle(cornerRadius: WSRadius.popover).strokeBorder(WSColor.hairline))
+            .padding(.bottom, WSSpace.xl)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .id(toast.id)
+        }
     }
 }

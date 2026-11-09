@@ -2,7 +2,7 @@
 
 A personal productivity app for Mac and iPhone: folders, lists, classes and projects, a scoped dashboard, a calendar with Google events, class templates and Kanban boards. The full design is in [docs/DESIGN.md](docs/DESIGN.md).
 
-**Status:** Milestone 0 (foundation) is done. Milestone 1 (core Mac UI) is next.
+**Status:** Milestone 0 (foundation) and Milestone 1 (core Mac dashboard) are done. Milestone 2 (full calendar + Google Calendar via EventKit) is next.
 
 ## Layout
 
