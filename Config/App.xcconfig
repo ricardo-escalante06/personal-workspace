@@ -1,0 +1,6 @@
+// Shared build settings for both app targets.
+// Supabase credentials live in Secrets.xcconfig (git-ignored). Copy Secrets.example.xcconfig to start.
+// If Secrets.xcconfig is missing, the app runs in local-only mode.
+SUPABASE_HOST =
+SUPABASE_ANON_KEY =
+#include? "Secrets.xcconfig"
