@@ -398,10 +398,10 @@ Each milestone ends with: migrations reviewed, unit tests passing, a short manua
 | 0 | **Foundation** | Xcode workspace and both packages exist. Supabase project has migrations and RLS tests. Sign in with Apple works. GRDB schema and sync engine (outbox, pull cursor, tombstones) work. Design tokens are in place. Seed data matches the §12 examples. |
 | 1 | **Core Mac** | Sidebar tree (CRUD, drag re-parent), scoped dashboard (all six regions), week strip, task inspector, categories, ⌘N quick add with parser, ⌘K palette. |
 | 2 | **Calendar + Google** | Full Calendar day/week/month time grid. Schedule block create/move/resize. EventKit read/write. Event mapping rules. Calendar source toggles. *(2b: publishing blocks to Google.)* |
-| 3 | **Templates + Board** | Class template with assignment series and Edit series. Project template with board (columns, status mapping, swimlanes). Save-as-template. Task templates. |
-| 4 | **Recurrence** | Rule editor with next-occurrences preview. Overrides. This/future/all edits. Edge-case test suite. |
-| 5 | **iPhone + Widgets** | Today, Calendar (3-day), Browse, board paging, quick-add sheet, interactive Today widget, Lock Screen widget, App Intents and Shortcuts. |
-| 6 | **Polish** | Notion import (one-time), JSON export/backup, notifications for due and blocks, accessibility pass, empty and error states. |
+| 3 | **Classes, Clubs + Boards** | *3a Classes:* assignment series ("HW 1–12, due Fridays 11:59 PM") with Edit series; class template (term, categories, meetings, series in one sheet). *3b Event links:* rules for any container — "titles starting with X" or "everything on calendar Y" — managed from the container editor; Belongs to can apply to all occurrences of a recurring event. *3c Boards:* project Kanban with custom columns, status mapping, drag between columns, optional swimlanes; Milestone category as diamond markers in the week strip and calendar. *3d Templates:* project template (columns + starter milestones), save any container as a template, task templates. |
+| 4 | **Recurring tasks** | Rule editor (daily/weekly/monthly/custom) with next-occurrences preview. Overrides per occurrence. This/future/all edits. Recurring tasks on the dashboard and calendar. Edge-case test suite (DST, month ends, completed-early). |
+| 5 | **iPhone + Widgets** | Today, Calendar (3-day), Browse, board paging, quick-add sheet, Google sign-in on iOS, interactive Today widget, Lock Screen widget, App Intents and Shortcuts. |
+| 6 | **Polish** | Publish task blocks to Google (optional, per calendar). Better overlap layout in narrow columns. Notion import (one-time), JSON export/backup, notifications for due tasks and blocks, accessibility pass, empty and error states. |
 
 The iPhone app comes after the Mac UI settles, but WorkspaceKit already builds for iOS from Milestone 0, so Phase 5 is mostly UI work.
 
