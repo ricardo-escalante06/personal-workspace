@@ -293,6 +293,67 @@ final class GoogleCalendarService {
         await sync(email: loc.email)
     }
 
+    /// Saves panel edits. `wholeSeries` edits the repeating event itself instead of
+    /// this occurrence. A calendar change uses Google's move call (same account only).
+    func update(_ event: ExternalEvent, _ changes: EventChanges, wholeSeries: Bool) async throws {
+        let loc = try location(event)
+        let master = caches[loc.email]?.events[loc.calendarId]?[loc.eventId]?.recurringEventId
+        let eventId = wholeSeries ? (master ?? loc.eventId) : loc.eventId
+        var body: [String: Any] = [:]
+        if let t = changes.title { body["summary"] = t }
+        if let l = changes.location { body["location"] = l }
+        if let n = changes.notes { body["description"] = n }
+        if let c = changes.colorId { body["colorId"] = c ?? NSNull() }
+        if let busy = changes.isBusy { body["transparency"] = busy ? "opaque" : "transparent" }
+        if let r = changes.reminders {
+            body["reminders"] = ["useDefault": false,
+                                 "overrides": r.map { ["method": "popup", "minutes": $0] }]
+        }
+        if let v = changes.visibility { body["visibility"] = v }
+        if let allDay = changes.isAllDay {
+            let day = LocalDate(event.start)
+            if allDay {
+                body["start"] = ["date": day.description]
+                body["end"] = ["date": day.adding(days: 1).description]
+            } else {
+                let start = day.at(LocalTime(hour: 9, minute: 0))
+                body["start"] = dateTimeJSON(start, allDay: false)
+                body["end"] = dateTimeJSON(start.addingTimeInterval(3600), allDay: false)
+            }
+        }
+        if !changes.addGuests.isEmpty || !changes.removeGuests.isEmpty {
+            // Google replaces the whole guest list: start from the current one.
+            let current = (caches[loc.email]?.events[loc.calendarId]?[loc.eventId]?.attendees ?? []).compactMap { p -> [String: Any]? in
+                guard let email = p.email, !changes.removeGuests.contains(email) else { return nil }
+                var a: [String: Any] = ["email": email]
+                if let r = p.responseStatus { a["responseStatus"] = r }
+                if let o = p.optional { a["optional"] = o }
+                return a
+            }
+            let existing = Set(current.compactMap { $0["email"] as? String })
+            body["attendees"] = current + changes.addGuests.filter { !existing.contains($0) }.map { ["email": $0] }
+        }
+        var query = ["sendUpdates": "all"]
+        if changes.addMeet {
+            body["conferenceData"] = ["createRequest": ["requestId": UUID().uuidString,
+                                                        "conferenceSolutionKey": ["type": "hangoutsMeet"]]]
+            query["conferenceDataVersion"] = "1"
+        }
+        var calendarId = loc.calendarId
+        if !body.isEmpty {
+            let data = try await request(loc.email, "PATCH", "/calendars/\(Self.escape(calendarId))/events/\(Self.escape(eventId))",
+                                         query: query, body: body)
+            if !wholeSeries { try store(data, email: loc.email, calendarId: calendarId) }
+        }
+        if let target = changes.calendarId, let ref = GoogleCalendarAPI.parseCalendarKey(target),
+           ref.account == loc.email, ref.calendarId != calendarId {
+            _ = try await request(loc.email, "POST", "/calendars/\(Self.escape(calendarId))/events/\(Self.escape(master ?? loc.eventId))/move",
+                                  query: ["destination": ref.calendarId, "sendUpdates": "all"])
+            calendarId = ref.calendarId
+        }
+        await sync(email: loc.email)
+    }
+
     /// "This and following": ends the series just before `event`, and (when moving)
     /// starts a copy of it at `newStart`. `newStart == nil` deletes the rest.
     func editFollowing(of event: ExternalEvent, newStart: Date?, newEnd: Date?, dayShift: Int) async throws {
@@ -342,6 +403,15 @@ final class GoogleCalendarService {
         bump()
     }
 
+    /// Deletes an event by id (undoing a paste).
+    func delete(calendarKey: String, eventId: String) async throws {
+        guard let ref = GoogleCalendarAPI.parseCalendarKey(calendarKey) else { throw ServiceError.notConnected }
+        _ = try await request(ref.account, "DELETE", "/calendars/\(Self.escape(ref.calendarId))/events/\(Self.escape(eventId))")
+        caches[ref.account]?.events[ref.calendarId]?.removeValue(forKey: eventId)
+        if let cache = caches[ref.account] { Self.saveCache(cache, ref.account) }
+        bump()
+    }
+
     /// Yes / No / Maybe on an invitation.
     func respond(_ event: ExternalEvent, _ response: EventAttendee.Response) async throws {
         let loc = try location(event)
@@ -360,10 +430,25 @@ final class GoogleCalendarService {
 
     @discardableResult
     func create(title: String, start: Date, end: Date, calendarKey: String,
-                location: String? = nil, recurrence: [String]? = nil) async throws -> String {
+                location: String? = nil, recurrence: [String]? = nil, copying template: ExternalEvent? = nil) async throws -> String {
         guard let ref = GoogleCalendarAPI.parseCalendarKey(calendarKey) else { throw ServiceError.notConnected }
-        var body: [String: Any] = ["summary": title, "start": dateTimeJSON(start, allDay: false), "end": dateTimeJSON(end, allDay: false)]
+        let allDay = template?.isAllDay ?? false
+        var body: [String: Any] = ["summary": title]
+        if allDay {
+            body["start"] = ["date": LocalDate(start).description]
+            body["end"] = ["date": LocalDate(end.addingTimeInterval(-1)).adding(days: 1).description]
+        } else {
+            body["start"] = dateTimeJSON(start, allDay: false)
+            body["end"] = dateTimeJSON(end, allDay: false)
+        }
         if let location { body["location"] = location }
+        // A copy (paste, or undoing a delete) keeps the original's look and settings.
+        if let t = template {
+            if let notes = t.notes, !notes.isEmpty { body["description"] = notes }
+            if let color = GoogleEventColors.id(forHex: t.eventColor) { body["colorId"] = color }
+            body["transparency"] = t.isBusy ? "opaque" : "transparent"
+            body["reminders"] = ["useDefault": false, "overrides": t.reminders.map { ["method": "popup", "minutes": $0] }]
+        }
         if let recurrence { body["recurrence"] = recurrence }
         let data = try await request(ref.account, "POST", "/calendars/\(Self.escape(ref.calendarId))/events", body: body)
         try store(data, email: ref.account, calendarId: ref.calendarId)

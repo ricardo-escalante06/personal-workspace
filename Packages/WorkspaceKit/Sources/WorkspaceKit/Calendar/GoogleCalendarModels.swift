@@ -105,7 +105,7 @@ public enum GoogleCalendarAPI {
     }
 
     /// Google's fixed event color palette (colorId → hex).
-    static let eventColors: [String: UInt32] = [
+    public static let eventColors: [String: UInt32] = [
         "1": 0x7986CB, "2": 0x33B679, "3": 0x8E24AA, "4": 0xE67C73, "5": 0xF6BF26, "6": 0xF4511E,
         "7": 0x039BE5, "8": 0x616161, "9": 0x3F51B5, "10": 0x0B8043, "11": 0xD50000,
     ]

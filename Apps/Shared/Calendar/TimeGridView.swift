@@ -26,6 +26,11 @@ struct TimeGridView: View {
     let onClick: (CalendarItem, _ additive: Bool) -> Void
     let onOpen: (CalendarItem) -> Void
     let onScrollDays: (Int) -> Void
+    /// A click on an empty spot, and the spot under the mouse: where ⌘V pastes.
+    var onPickTime: (Date) -> Void = { _ in }
+    var onHoverTime: (Date?) -> Void = { _ in }
+    /// The item whose details popover is open (Mac).
+    var popoverItemId: Binding<String?> = .constant(nil)
 
     static let hourHeight: CGFloat = 52
     static let gutter: CGFloat = 58
@@ -35,6 +40,9 @@ struct TimeGridView: View {
     @State private var ghost: Ghost?
     /// A finished drag-to-create, kept visible while its popover is open.
     @State private var pendingCreate: Ghost?
+    /// When the current press on empty space began (hold ⇒ create).
+    @State private var pressStart: Date?
+    static let holdToCreate: TimeInterval = 0.35
     @State private var dropTargetDay: Int?
     @State private var now = Date()
     @State private var scrollAccumulator: CGFloat = 0
@@ -243,6 +251,16 @@ struct TimeGridView: View {
                 .frame(width: width, height: Self.hourHeight * 24)
                 .contentShape(Rectangle())
                 .gesture(createGesture(columnWidth: columnWidth))
+                #if os(macOS)
+                .onContinuousHover(coordinateSpace: .named("grid")) { phase in
+                    switch phase {
+                    case .active(let p):
+                        onHoverTime(slotTime(day: min(max(Int(p.x / columnWidth), 0), days.count - 1), y: p.y))
+                    case .ended:
+                        onHoverTime(nil)
+                    }
+                }
+                #endif
                 // Drop a task (from the all-day row, dashboard or Inbox) to time-block it.
                 // The deadline stays where it is; this adds a 1-hour work block.
                 .dropDestination(for: String.self) { payloads, location in
@@ -348,6 +366,15 @@ struct TimeGridView: View {
                     #endif
             }
         }
+        #if os(macOS)
+        // Click: details right next to the block (Notion-style), not in the far panel.
+        .popover(isPresented: Binding(
+            get: { popoverItemId.wrappedValue == p.item.id },
+            set: { if !$0, popoverItemId.wrappedValue == p.item.id { popoverItemId.wrappedValue = nil } }
+        ), arrowEdge: .trailing) {
+            CalendarItemPopover(item: p.item) { popoverItemId.wrappedValue = nil }
+        }
+        #endif
         .offset(x: CGFloat(dayIndex) * columnWidth + 2 + CGFloat(p.column) * subWidth + dx, y: top + 1 + dy)
         .zIndex(moving || resizing ? 10 : 1)
         .shadow(color: moving ? .black.opacity(0.35) : .clear, radius: 8, y: 4)
@@ -429,26 +456,39 @@ struct TimeGridView: View {
 
     private func createGesture(columnWidth: CGFloat) -> some Gesture {
         #if os(iOS)
-        // Tap an empty slot for a one-hour block there (dragging is for scrolling).
-        SpatialTapGesture(coordinateSpace: .named("grid"))
-            .onEnded { v in
-                if !selection.isEmpty { selection = []; return }
-                let dayIndex = min(max(Int(v.location.x / columnWidth), 0), days.count - 1)
+        // Press and hold an empty slot for a one-hour block there (a tap or swipe just scrolls).
+        LongPressGesture(minimumDuration: Self.holdToCreate)
+            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named("grid")))
+            .onEnded { value in
+                guard case .second(true, let v?) = value else { return }
+                if !selection.isEmpty { selection = [] }
+                let dayIndex = min(max(Int(v.startLocation.x / columnWidth), 0), days.count - 1)
                 let step = Self.hourHeight * CGFloat(Self.snapMinutes / 60)
-                let top = max(0, (v.location.y / step).rounded(.down) * step)
+                let top = max(0, (v.startLocation.y / step).rounded(.down) * step)
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 pendingCreate = Ghost(day: dayIndex, y0: top, y1: min(top + Self.hourHeight, Self.hourHeight * 24))
             }
         #else
         DragGesture(minimumDistance: 0, coordinateSpace: .named("grid"))
             .onChanged { v in
+                if pressStart == nil { pressStart = Date() }
+                // Nothing shows until you drag or hold; a plain click never starts a block.
+                let held = Date().timeIntervalSince(pressStart ?? Date()) >= Self.holdToCreate
+                guard abs(v.translation.height) >= 4 || held else { return }
                 let day = min(max(Int(v.startLocation.x / columnWidth), 0), days.count - 1)
-                ghost = Ghost(day: day, y0: snapY(v.startLocation.y), y1: snapY(v.location.y))
+                let y1 = abs(v.translation.height) >= 4 ? snapY(v.location.y) : snapY(v.startLocation.y) + Self.hourHeight
+                ghost = Ghost(day: day, y0: snapY(v.startLocation.y), y1: y1)
             }
             .onEnded { v in
                 defer { ghost = nil }
-                // A plain click on empty space just clears the selection.
-                if abs(v.translation.height) < 4, abs(v.translation.width) < 4, !selection.isEmpty {
+                let clickedDay = min(max(Int(v.startLocation.x / columnWidth), 0), days.count - 1)
+                onPickTime(slotTime(day: clickedDay, y: v.startLocation.y))
+                let held = Date().timeIntervalSince(pressStart ?? Date()) >= Self.holdToCreate
+                pressStart = nil
+                // A plain click on empty space: clear the selection and close the details.
+                if abs(v.translation.height) < 4, abs(v.translation.width) < 4, !held {
                     selection = []
+                    model.setInspector(visible: false)
                     return
                 }
                 let dayIndex = min(max(Int(v.startLocation.x / columnWidth), 0), days.count - 1)
@@ -466,6 +506,13 @@ struct TimeGridView: View {
         let top = min(g.y0, g.y1), bottom = max(g.y0, g.y1)
         return (day.addingTimeInterval(TimeInterval(top / Self.hourHeight * 3600)),
                 day.addingTimeInterval(TimeInterval(bottom / Self.hourHeight * 3600)))
+    }
+
+    /// The 15-minute slot containing `y` (the one you pointed at, not the nearest line).
+    private func slotTime(day: Int, y: CGFloat) -> Date {
+        let step = Self.hourHeight * CGFloat(Self.snapMinutes / 60)
+        let top = max(0, min(Self.hourHeight * 24 - step, (y / step).rounded(.down) * step))
+        return days[day].startOfDay(in: tz).addingTimeInterval(TimeInterval(top / Self.hourHeight * 3600))
     }
 
     private func snapY(_ y: CGFloat) -> CGFloat {
@@ -628,6 +675,58 @@ private struct HorizontalScrollCatcher: NSViewRepresentable {
             if let monitor { NSEvent.removeMonitor(monitor) }
             monitor = nil
         }
+    }
+}
+#endif
+
+#if os(macOS)
+/// The details panel's content in a popover beside the clicked block.
+struct CalendarItemPopover: View {
+    @Environment(AppModel.self) private var model
+    let item: CalendarItem
+    let close: () -> Void
+    /// The popover itself holds focus (not the title field), so ⌘C copies the event
+    /// rather than text. Click into a field to edit text as usual.
+    @FocusState private var holdsFocus: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                Button {
+                    close()
+                    if let taskId = item.taskId { model.openDetails(taskId) }
+                    else if let e = item.event { model.inspect(e, open: true) }
+                } label: { Image(systemName: "sidebar.right") }
+                    .buttonStyle(.borderless)
+                    .help("Open in the side panel")
+            }
+            .padding(.horizontal, WSSpace.m).padding(.top, WSSpace.s)
+            Group {
+                if let e = item.event {
+                    EventInspector(event: e)
+                } else if let taskId = item.taskId {
+                    TaskInspector(taskId: taskId)
+                }
+            }
+        }
+        .frame(width: 360, height: 540)
+        .background(WSColor.raised)
+        .focusable()
+        .focusEffectDisabled()
+        .focused($holdsFocus)
+        .onAppear { DispatchQueue.main.async { holdsFocus = true } }
+        .onCommand(#selector(NSText.copy(_:))) { copy() }
+        .onCommand(#selector(NSText.cut(_:))) { copy(); close(); model.deleteCalendarItems([item]) }
+        .onCommand(#selector(NSText.paste(_:))) {
+            close()
+            model.pasteCalendarItems(model.calendarClipboard, shift: 0)
+        }
+    }
+
+    private func copy() {
+        guard !item.isDeadline else { return }
+        model.calendarClipboard = [item]
     }
 }
 #endif

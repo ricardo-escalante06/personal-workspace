@@ -15,6 +15,22 @@ struct EventInspector: View {
     @State private var end = Date()
     @State private var showAllGuests = false
     @State private var myResponse: EventAttendee.Response?
+    // Editable fields (writable events).
+    @State private var titleDraft = ""
+    @State private var locationDraft = ""
+    @State private var notesDraft = ""
+    @State private var colorId: String?
+    @State private var isBusy = true
+    @State private var reminders: [Int] = []
+    @State private var calendarId = ""
+    @State private var visibility = "default"
+    @State private var showColors = false
+    @State private var newGuest = ""
+    @State private var removedGuests: Set<String> = []
+    @FocusState private var focus: Field?
+    private enum Field { case title, location, notes }
+
+    private var editable: Bool { event.isWritable }
 
     var body: some View {
         ScrollView {
@@ -22,15 +38,33 @@ struct EventInspector: View {
                 titleSection
                 divider
                 timeSection
-                if !event.attendees.isEmpty || event.organizer != nil {
+                if !event.attendees.isEmpty || event.organizer != nil || (editable && event.provider == .google) {
                     divider
                     guestsSection
+                    if editable && event.provider == .google {
+                        addGuestRow.padding(.horizontal, WSSpace.l).padding(.bottom, WSSpace.m)
+                    }
                 }
-                if event.conferenceURL != nil || (event.location?.isEmpty == false) {
+                if editable || event.conferenceURL != nil || (event.location?.isEmpty == false) {
                     divider
                     whereSection
                 }
-                if let notes = event.notes, !notes.isEmpty {
+                if editable {
+                    divider
+                    section {
+                        VStack(alignment: .trailing, spacing: 6) {
+                            TextField("Add description", text: $notesDraft, axis: .vertical)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 12.5))
+                                .lineLimit(3...12)
+                                .focused($focus, equals: .notes)
+                            if notesDraft != Self.plainText(event.notes ?? "") {
+                                Button("Save description") { save { $0.notes = notesDraft } }
+                                    .buttonStyle(.borderedProminent).controlSize(.small)
+                            }
+                        }
+                    }
+                } else if let notes = event.notes, !notes.isEmpty {
                     divider
                     section {
                         Text(Self.plainText(notes))
@@ -54,6 +88,15 @@ struct EventInspector: View {
             start = event.start
             end = event.end
             myResponse = event.selfResponse
+            titleDraft = event.title
+            locationDraft = event.location ?? ""
+            notesDraft = Self.plainText(event.notes ?? "")
+            colorId = GoogleEventColors.id(forHex: event.eventColor)
+            isBusy = event.isBusy
+            reminders = event.reminders
+            calendarId = event.calendarId
+            removedGuests = []
+            newGuest = ""
             mappedContainer = try? await model.store.db.read { try EventMapper.load($0).containerId(for: event) }
         }
     }
@@ -64,13 +107,25 @@ struct EventInspector: View {
         section {
             HStack(alignment: .top, spacing: WSSpace.s) {
                 RoundedRectangle(cornerRadius: 2)
-                    .fill(Color(hex: event.eventColor ?? model.calendarSource.color(forCalendar: event.calendarId, fallback: event.calendarColor)))
+                    .fill(Color(hex: colorId.flatMap(GoogleEventColors.hex) ?? model.calendarSource.color(forCalendar: event.calendarId, fallback: event.calendarColor)))
                     .frame(width: 4, height: 22)
-                Text(event.title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(event.isDeclined ? WSColor.textTertiary : WSColor.textPrimary)
-                    .strikethrough(event.isDeclined)
-                    .textSelection(.enabled)
+                if editable {
+                    TextField("Title", text: $titleDraft, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 16, weight: .semibold))
+                        .focused($focus, equals: .title)
+                        .onSubmit(commitTitle)
+                        .onChange(of: focus) { old, _ in
+                            if old == .title { commitTitle() }
+                            if old == .location { commitLocation() }
+                        }
+                } else {
+                    Text(event.title)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(event.isDeclined ? WSColor.textTertiary : WSColor.textPrimary)
+                        .strikethrough(event.isDeclined)
+                        .textSelection(.enabled)
+                }
             }
         }
     }
@@ -106,6 +161,12 @@ struct EventInspector: View {
                     if event.isRecurring {
                         Label("Repeats", systemImage: "repeat")
                             .font(.system(size: 11.5)).foregroundStyle(WSColor.textTertiary)
+                    }
+                    if editable {
+                        Toggle("All-day", isOn: Binding(get: { event.isAllDay }, set: { v in save { $0.isAllDay = v } }))
+                            .checkboxToggleStyle()
+                            .font(.system(size: 12))
+                            .foregroundStyle(WSColor.textSecondary)
                     }
                 }
             }
@@ -164,8 +225,17 @@ struct EventInspector: View {
                 }
             }
             Spacer(minLength: 0)
+            if editable && event.provider == .google && !g.isSelf && !g.isOrganizer {
+                Button { removedGuests.insert(g.email); save { $0.removeGuests = [g.email] } } label: {
+                    Image(systemName: "xmark").imageScale(.small)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(WSColor.textTertiary)
+                .help("Remove guest")
+            }
         }
         .font(.system(size: 12.5))
+        .opacity(removedGuests.contains(g.email) ? 0.35 : 1)
     }
 
     @ViewBuilder private func responseBadge(_ r: EventAttendee.Response) -> some View {
@@ -219,6 +289,13 @@ struct EventInspector: View {
     private var whereSection: some View {
         section {
             VStack(alignment: .leading, spacing: 10) {
+                if event.conferenceURL == nil, editable, event.provider == .google {
+                    row(icon: "video") {
+                        Button("Add Google Meet") { save { $0.addMeet = true } }
+                            .buttonStyle(.borderless)
+                            .font(.system(size: 12.5))
+                    }
+                }
                 if let url = event.conferenceURL {
                     row(icon: "video") {
                         HStack {
@@ -233,7 +310,14 @@ struct EventInspector: View {
                         }
                     }
                 }
-                if let location = event.location, !location.isEmpty {
+                if editable {
+                    row(icon: "mappin.and.ellipse") {
+                        TextField("Add location", text: $locationDraft)
+                            .textFieldStyle(.plain)
+                            .focused($focus, equals: .location)
+                            .onSubmit(commitLocation)
+                    }
+                } else if let location = event.location, !location.isEmpty {
                     row(icon: "mappin.and.ellipse") {
                         if let maps = URL(string: "https://maps.apple.com/?q=\(location.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")") {
                             Link(location, destination: maps)
@@ -251,18 +335,54 @@ struct EventInspector: View {
         section {
             VStack(alignment: .leading, spacing: 8) {
                 row(icon: "calendar") {
-                    HStack(spacing: 6) {
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(Color(hex: model.calendarSource.color(forCalendar: event.calendarId, fallback: event.calendarColor)))
-                            .frame(width: 12, height: 12)
-                        Text(event.calendarTitle).lineLimit(1)
-                        if !event.isWritable { Image(systemName: "lock").imageScale(.small).foregroundStyle(WSColor.textTertiary) }
+                    if editable && !sameAccountCalendars.isEmpty {
+                        Picker("", selection: Binding(get: { calendarId }, set: { id in
+                            calendarId = id
+                            save { $0.calendarId = id }
+                        })) {
+                            ForEach(sameAccountCalendars) { cal in
+                                Label { Text(cal.title) } icon: { ColorSwatchImage.image(hex: cal.color) }.tag(cal.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                    } else {
+                        HStack(spacing: 6) {
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(Color(hex: model.calendarSource.color(forCalendar: event.calendarId, fallback: event.calendarColor)))
+                                .frame(width: 12, height: 12)
+                            Text(event.calendarTitle).lineLimit(1)
+                            if !event.isWritable { Image(systemName: "lock").imageScale(.small).foregroundStyle(WSColor.textTertiary) }
+                        }
                     }
                 }
-                row(icon: "circle.lefthalf.filled") {
-                    Text(event.isBusy ? "Busy" : "Free")
+                if editable && event.provider == .google {
+                    row(icon: "paintpalette") { colorMenu }
                 }
-                if !event.reminders.isEmpty {
+                row(icon: "circle.lefthalf.filled") {
+                    if editable {
+                        Picker("", selection: Binding(get: { isBusy }, set: { v in isBusy = v; save { $0.isBusy = v } })) {
+                            Text("Busy").tag(true)
+                            Text("Free").tag(false)
+                        }
+                        .labelsHidden().fixedSize()
+                    } else {
+                        Text(event.isBusy ? "Busy" : "Free")
+                    }
+                }
+                if editable && event.provider == .google {
+                    row(icon: "eye") {
+                        Picker("", selection: Binding(get: { visibility }, set: { v in visibility = v; save { $0.visibility = v } })) {
+                            Text("Default visibility").tag("default")
+                            Text("Public").tag("public")
+                            Text("Private").tag("private")
+                        }
+                        .labelsHidden().fixedSize()
+                    }
+                }
+                if editable {
+                    row(icon: "bell") { remindersEditor }
+                } else if !event.reminders.isEmpty {
                     row(icon: "bell") {
                         Text(event.reminders.map(Self.reminderText).joined(separator: ", "))
                     }
@@ -301,12 +421,132 @@ struct EventInspector: View {
                 }
                 Spacer()
                 if event.isWritable {
-                    Button("Delete", role: .destructive) { model.pendingEventDelete = [event] }
+                    Button("Delete", role: .destructive) { model.deleteEvents([event]) }
                         .buttonStyle(.borderless)
                         .font(.system(size: 12))
                 }
             }
         }
+    }
+
+    // MARK: Editing
+
+    /// Calendars an event can move to: same account (Google can't move between accounts).
+    private var sameAccountCalendars: [CalendarSource.CalendarInfo] {
+        let mine = model.calendarSource.calendars.first { $0.id == event.calendarId }
+        return model.calendarSource.writableCalendars.filter { $0.account == mine?.account && $0.provider == event.provider }
+    }
+
+    /// "Add guest" field: type an email and press Return (they get an invite).
+    private var addGuestRow: some View {
+        HStack(spacing: WSSpace.m) {
+            Image(systemName: "person.badge.plus").font(.system(size: 13)).foregroundStyle(WSColor.textTertiary).frame(width: 18)
+            TextField("Add guest by email", text: $newGuest)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .onSubmit {
+                    let email = newGuest.trimmingCharacters(in: .whitespaces)
+                    guard email.contains("@") else { return }
+                    save { $0.addGuests = [email] }
+                    newGuest = ""
+                }
+        }
+    }
+
+    /// A palette of real swatches (menus can't show colors reliably).
+    private var colorMenu: some View {
+        let calendarHex = model.calendarSource.color(forCalendar: event.calendarId, fallback: event.calendarColor)
+        return Button { showColors.toggle() } label: {
+            HStack(spacing: 6) {
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(Color(hex: colorId.flatMap(GoogleEventColors.hex) ?? calendarHex))
+                    .frame(width: 12, height: 12)
+                Text(colorId.flatMap { id in GoogleEventColors.all.first { $0.id == id }?.name } ?? "Calendar color")
+                Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(WSColor.textTertiary)
+            }
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showColors, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 8) {
+                swatch(name: "Calendar color", hex: calendarHex, selected: colorId == nil) {
+                    colorId = nil; save { $0.colorId = .some(nil) }
+                }
+                Divider()
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(30), spacing: 6), count: 6), spacing: 6) {
+                    ForEach(GoogleEventColors.all, id: \.id) { c in
+                        Button {
+                            colorId = c.id; save { $0.colorId = .some(c.id) }; showColors = false
+                        } label: {
+                            Circle().fill(Color(hex: GoogleEventColors.hex(c.id) ?? 0))
+                                .frame(width: 24, height: 24)
+                                .overlay(Circle().strokeBorder(.white, lineWidth: colorId == c.id ? 2 : 0))
+                                .overlay { if colorId == c.id { Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.white) } }
+                        }
+                        .buttonStyle(.plain)
+                        .help(c.name)
+                    }
+                }
+            }
+            .padding(12)
+        }
+    }
+
+    private func swatch(name: String, hex: UInt32, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button { action(); showColors = false } label: {
+            HStack(spacing: 8) {
+                Circle().fill(Color(hex: hex)).frame(width: 16, height: 16)
+                Text(name).font(.system(size: 12.5))
+                if selected { Image(systemName: "checkmark").imageScale(.small) }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var remindersEditor: some View {
+        let options = [0, 5, 10, 15, 30, 60, 120, 1440]
+        return HStack(spacing: 6) {
+            ForEach(reminders, id: \.self) { m in
+                HStack(spacing: 3) {
+                    Text(Self.reminderText(m))
+                    Button { setReminders(reminders.filter { $0 != m }) } label: { Image(systemName: "xmark").imageScale(.small) }
+                        .buttonStyle(.plain).foregroundStyle(WSColor.textTertiary)
+                }
+                .font(.system(size: 12))
+                .padding(.horizontal, 7).padding(.vertical, 2)
+                .background(Capsule().fill(WSColor.hairline))
+            }
+            Menu {
+                ForEach(options.filter { !reminders.contains($0) }, id: \.self) { m in
+                    Button(Self.reminderText(m)) { setReminders((reminders + [m]).sorted()) }
+                }
+            } label: {
+                Text(reminders.isEmpty ? "Add alert" : "+").font(.system(size: 12))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+    }
+
+    private func setReminders(_ value: [Int]) {
+        reminders = value
+        save { $0.reminders = value }
+    }
+
+    private func commitTitle() {
+        let t = titleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, t != event.title else { return }
+        save { $0.title = t }
+    }
+
+    private func commitLocation() {
+        guard locationDraft != (event.location ?? "") else { return }
+        save { $0.location = locationDraft }
+    }
+
+    private func save(_ change: (inout EventChanges) -> Void) {
+        var c = EventChanges()
+        change(&c)
+        model.updateEvent(event, c)
     }
 
     // MARK: Helpers

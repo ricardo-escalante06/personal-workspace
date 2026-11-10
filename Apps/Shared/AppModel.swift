@@ -70,9 +70,14 @@ final class AppModel {
     /// A drag of a Google/system event waiting for confirmation ("This updates Google Calendar").
     var pendingEventMove: PendingEventMove?
     var pendingEventDelete: [ExternalEvent] = []
+    var pendingEventEdit: PendingEventEdit?
+    /// Calendar items copied with ⌘C.
+    var calendarClipboard: [CalendarItem] = []
     /// Event moves/deletes that are saving (or waiting on "This / Following / All").
-    enum EventOverride: Hashable { case moved(Date, Date), deleted }
+    enum EventOverride: Hashable { case moved(Date, Date), deleted, edited(EventChanges) }
     var eventOverrides: [String: EventOverride] = [:]
+    /// New events shown right away while Google/Apple saves them.
+    var pendingEventCreates: [String: ExternalEvent] = [:]
     /// Account the "New Calendar" prompt is open for.
     var newCalendarAccount: String?
     var pendingCalendarDelete: CalendarSource.CalendarInfo?
@@ -835,6 +840,50 @@ final class AppModel {
         requestEventMoves([.init(event: event, start: start, end: end)])
     }
 
+    /// Event panel edits. Repeating events ask "Only This Event / All Events" first.
+    func updateEvent(_ event: ExternalEvent, _ changes: EventChanges) {
+        guard !changes.isEmpty else { return }
+        if event.isRecurring {
+            pendingEventEdit = PendingEventEdit(event: event, changes: changes)
+        } else {
+            commitEventEdit(event, changes, wholeSeries: false)
+        }
+    }
+
+    func confirmEventEdit(wholeSeries: Bool) {
+        guard let p = pendingEventEdit else { return }
+        pendingEventEdit = nil
+        commitEventEdit(p.event, p.changes, wholeSeries: wholeSeries)
+    }
+
+    /// Shows the edit at once; if saving to the calendar fails, the old values come back.
+    private func commitEventEdit(_ event: ExternalEvent, _ changes: EventChanges, wholeSeries: Bool) {
+        if case .edited(var pending) = eventOverrides[event.key] {
+            // Several quick edits to one event: show them all.
+            if let t = changes.title { pending.title = t }
+            if let l = changes.location { pending.location = l }
+            if let n = changes.notes { pending.notes = n }
+            if let c = changes.colorId { pending.colorId = c }
+            if let b = changes.isBusy { pending.isBusy = b }
+            if let r = changes.reminders { pending.reminders = r }
+            eventOverrides[event.key] = .edited(pending)
+        } else if eventOverrides[event.key] == nil {
+            eventOverrides[event.key] = .edited(changes)
+        }
+        let source = calendarSource
+        Task {
+            do {
+                try await source.update(event, changes, wholeSeries: wholeSeries)
+                try? await Task.sleep(for: .seconds(2))
+            } catch GoogleAuth.AuthError.cancelled {
+            } catch {
+                errorMessage = "Couldn't save that change to your calendar, so it was undone. \(error.localizedDescription)"
+                if inspectedEvent?.key == event.key { inspectedEvent = event }
+            }
+            if case .edited = eventOverrides[event.key] { eventOverrides[event.key] = nil }
+        }
+    }
+
     /// Yes / No / Maybe on a Google invitation.
     func respond(_ event: ExternalEvent, _ response: EventAttendee.Response) {
         runCalendar { try await $0.respond(event, response) }
@@ -877,7 +926,55 @@ final class AppModel {
     }
 
     func createEvent(title: String, start: Date, end: Date, calendarId: String?) {
-        runCalendar { try await $0.create(title: title, start: start, end: end, calendarId: calendarId) }
+        Task { await createEventsInstantly([NewEventSpec(title: title, start: start, end: end, calendarId: calendarId)]) }
+    }
+
+    struct NewEventSpec {
+        var title: String
+        var start: Date
+        var end: Date
+        var calendarId: String?
+        var location: String? = nil
+        var notes: String? = nil
+        /// Copy color, alerts, busy/free and all-day from this event.
+        var template: ExternalEvent? = nil
+    }
+
+    /// Creates events the "instant" way: a stand-in shows immediately, the real event
+    /// replaces it once saved, and if saving fails the stand-in goes away with a message.
+    @discardableResult
+    func createEventsInstantly(_ specs: [NewEventSpec]) async -> [CalendarSource.CreatedEvent] {
+        let source = calendarSource
+        var standIns: [String] = []
+        for spec in specs {
+            let calendarId = spec.calendarId ?? source.defaultCalendarId ?? ""
+            let info = source.calendars.first { $0.id == calendarId }
+            var e = ExternalEvent(key: "pending-\(UUID().uuidString)", localId: "", calendarId: calendarId,
+                                  calendarTitle: info?.title ?? "", calendarColor: info?.color ?? 0x8A8A8A,
+                                  title: spec.title, start: spec.start, end: spec.end,
+                                  isAllDay: spec.template?.isAllDay ?? false, isWritable: false,
+                                  location: spec.location, notes: spec.notes)
+            e.eventColor = spec.template?.eventColor
+            pendingEventCreates[e.key] = e
+            standIns.append(e.key)
+        }
+        var created: [CalendarSource.CreatedEvent] = []
+        do {
+            for (spec, key) in zip(specs, standIns) {
+                if let ref = try await source.create(title: spec.title, start: spec.start, end: spec.end,
+                                                     calendarId: spec.calendarId, location: spec.location,
+                                                     notes: spec.notes, copying: spec.template) {
+                    created.append(ref)
+                }
+                // The real event is in the calendar's cache now; swap out the stand-in.
+                pendingEventCreates[key] = nil
+            }
+        } catch GoogleAuth.AuthError.cancelled {
+        } catch {
+            errorMessage = "Couldn't add that to your calendar, so it was removed. \(error.localizedDescription)"
+        }
+        for key in standIns { pendingEventCreates[key] = nil }
+        return created
     }
 
     /// Event drags and edits apply right away; only repeating events ask
@@ -920,6 +1017,35 @@ final class AppModel {
         }
     }
 
+    /// Deletes right away: gone from the screen at once, back if Google says no, and
+    /// ⌘Z (or the toast's Undo) puts it back. Repeating events ask which ones first.
+    func deleteEvents(_ events: [ExternalEvent]) {
+        guard !events.isEmpty else { return }
+        if events.contains(where: \.isRecurring) {
+            pendingEventDelete = events
+            return
+        }
+        pendingEventDelete = events
+        confirmEventDelete(.one)
+        undoManager?.registerUndo(withTarget: self) { model in
+            MainActor.assumeIsolated { model.restoreDeletedEvents(events) }
+        }
+        let name = events.count == 1 ? "“\(events[0].title)”" : "\(events.count) events"
+        undoManager?.setActionName("Delete \(name)")
+        showToast(Toast(message: "Deleted \(name)", undo: { [weak self] in self?.undoManager?.undo() }))
+    }
+
+    /// Undo for a delete: the events come back as new copies with the same settings.
+    private func restoreDeletedEvents(_ events: [ExternalEvent]) {
+        for e in events { eventOverrides[e.key] = nil }
+        Task {
+            await createEventsInstantly(events.map {
+                NewEventSpec(title: $0.title, start: $0.start, end: $0.end, calendarId: $0.calendarId,
+                             location: $0.location, notes: $0.notes, template: $0)
+            })
+        }
+    }
+
     func confirmEventDelete(_ scope: EventEditScope = .one) {
         let events = pendingEventDelete
         pendingEventDelete = []
@@ -931,7 +1057,7 @@ final class AppModel {
                 try? await Task.sleep(for: .seconds(2))
             } catch GoogleAuth.AuthError.cancelled {
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = "Couldn't delete it in your calendar, so it's back. \(error.localizedDescription)"
             }
             for e in events { eventOverrides[e.key] = nil }
         }
@@ -940,8 +1066,8 @@ final class AppModel {
 
     /// Applies in-flight moves/deletes so the calendar doesn't jump back while saving.
     func applyingOverrides(_ events: [ExternalEvent]) -> [ExternalEvent] {
-        guard !eventOverrides.isEmpty else { return events }
-        return events.compactMap { e in
+        guard !eventOverrides.isEmpty || !pendingEventCreates.isEmpty else { return events }
+        return Array(pendingEventCreates.values) + events.compactMap { e in
             switch eventOverrides[e.key] {
             case nil: return e
             case .deleted: return nil
@@ -949,6 +1075,15 @@ final class AppModel {
                 var e = e
                 e.start = start
                 e.end = end
+                return e
+            case .edited(let c):
+                var e = e
+                if let t = c.title { e.title = t }
+                if let l = c.location { e.location = l }
+                if let n = c.notes { e.notes = n }
+                if let color = c.colorId { e.eventColor = color.flatMap(GoogleEventColors.hex) }
+                if let b = c.isBusy { e.isBusy = b }
+                if let r = c.reminders { e.reminders = r }
                 return e
             }
         }
@@ -982,7 +1117,60 @@ final class AppModel {
                 for (taskId, _, _) in clearedDeadlines { try store.editTask(taskId) { $0.dueDate = nil } }
             }
         }
-        if !events.isEmpty { pendingEventDelete = events }
+        if !events.isEmpty { deleteEvents(events) }
+    }
+
+    /// ⌘V on the calendar: a copy of each block (same task) and event (same calendar,
+    /// title, place and notes), moved by `shift` (0 = in the same spot). Returns the new
+    /// blocks' calendar ids so they can be selected. ⌘Z removes them all.
+    @discardableResult
+    func pasteCalendarItems(_ items: [CalendarItem], shift: TimeInterval) -> [String] {
+        let blocks = items.compactMap { item -> (UUID, Date, Date)? in
+            if case .block(let taskId, _) = item.source { return (taskId, item.start + shift, item.end + shift) }
+            return nil
+        }
+        var newIds: [String] = []
+        if !blocks.isEmpty {
+            undoable(blocks.count == 1 ? "Paste Work Block" : "Paste \(blocks.count) Work Blocks", blocks.map(\.0)) {
+                for (taskId, start, end) in blocks {
+                    let b = try store.addScheduleBlock(taskId: taskId, start: start, end: end)
+                    newIds.append("block-\(b.id)")
+                }
+            }
+        }
+        let events = items.compactMap { item -> (ExternalEvent, Date, Date)? in
+            if case .event(let e) = item.source { return (e, item.start + shift, item.end + shift) }
+            return nil
+        }
+        if !events.isEmpty {
+            let writable = Set(calendarSource.writableCalendars.map(\.id))
+            let specs = events.map { e, start, end in
+                NewEventSpec(title: e.title, start: start, end: end,
+                             calendarId: writable.contains(e.calendarId) ? e.calendarId : nil,
+                             location: e.location, notes: e.notes, template: e)
+            }
+            Task {
+                let created = await createEventsInstantly(specs)
+                guard !created.isEmpty else { return }
+                registerEventPasteUndo(created, items: items, shift: shift)
+            }
+        }
+        return newIds
+    }
+
+    /// ⌘Z after pasting events deletes them; ⌘⇧Z pastes them again.
+    private func registerEventPasteUndo(_ created: [CalendarSource.CreatedEvent], items: [CalendarItem], shift: TimeInterval) {
+        undoManager?.registerUndo(withTarget: self) { model in
+            MainActor.assumeIsolated {
+                let source = model.calendarSource
+                model.runCalendar { _ in for ref in created { try await source.delete(ref) } }
+                model.undoManager?.registerUndo(withTarget: model) { m in
+                    MainActor.assumeIsolated { m.pasteCalendarItems(items, shift: shift) }
+                }
+                model.undoManager?.setActionName("Paste Event")
+            }
+        }
+        undoManager?.setActionName(created.count == 1 ? "Paste Event" : "Paste \(created.count) Events")
     }
 
     /// Move/resize a work block (calendar drag, inspector), undoable.
@@ -1115,6 +1303,12 @@ struct ContainerEditorRequest: Identifiable {
     }
     let id = UUID()
     var mode: Mode
+}
+
+struct PendingEventEdit: Identifiable {
+    let id = UUID()
+    var event: ExternalEvent
+    var changes: EventChanges
 }
 
 struct QuickAddRequest: Identifiable {

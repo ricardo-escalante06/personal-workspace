@@ -278,6 +278,38 @@ final class CalendarSource {
         try store.save(e, span: .futureEvents, commit: true)
     }
 
+    /// Saves edits from the event panel (title, place, notes, color, busy, alerts, calendar).
+    func update(_ event: ExternalEvent, _ changes: EventChanges, wholeSeries: Bool) async throws {
+        if event.provider == .google {
+            guard let google else { throw WriteError.noGoogle }
+            try await google.update(event, changes, wholeSeries: wholeSeries)
+            return
+        }
+        let target = wholeSeries && event.isRecurring ? (store.event(withIdentifier: event.localId) ?? findEvent(event)) : findEvent(event)
+        guard let e = target else { throw WriteError.notFound }
+        guard e.calendar.allowsContentModifications else { throw WriteError.readOnly }
+        if let t = changes.title { e.title = t }
+        if let l = changes.location { e.location = l.isEmpty ? nil : l }
+        if let n = changes.notes { e.notes = n.isEmpty ? nil : n }
+        if let busy = changes.isBusy { e.availability = busy ? .busy : .free }
+        if let r = changes.reminders { e.alarms = r.map { EKAlarm(relativeOffset: -Double($0) * 60) } }
+        if let allDay = changes.isAllDay, allDay != e.isAllDay {
+            let day = LocalDate(e.startDate)
+            e.isAllDay = allDay
+            if allDay {
+                e.startDate = day.startOfDay(in: .current)
+                e.endDate = day.adding(days: 1).startOfDay(in: .current)
+            } else {
+                e.startDate = day.at(LocalTime(hour: 9, minute: 0))
+                e.endDate = e.startDate.addingTimeInterval(3600)
+            }
+        }
+        if let id = changes.calendarId, let cal = store.calendar(withIdentifier: id), cal.allowsContentModifications {
+            e.calendar = cal
+        }
+        try store.save(e, span: wholeSeries && event.isRecurring ? .futureEvents : .thisEvent, commit: true)
+    }
+
     /// Deletes one occurrence, it and the ones after, or the whole series.
     func delete(_ event: ExternalEvent, scope: EventEditScope) async throws {
         guard event.isRecurring, scope != .one else { return try await delete(event) }
@@ -389,20 +421,49 @@ final class CalendarSource {
         try await google.respond(event, response)
     }
 
-    func create(title: String, start: Date, end: Date, calendarId: String?) async throws {
+    /// Where a newly created event lives, so it can be removed again (⌘Z after a paste).
+    enum CreatedEvent: Sendable {
+        case google(calendarKey: String, eventId: String)
+        case system(identifier: String)
+    }
+
+    @discardableResult
+    func create(title: String, start: Date, end: Date, calendarId: String?,
+                location: String? = nil, notes: String? = nil, copying template: ExternalEvent? = nil) async throws -> CreatedEvent? {
         let target = calendarId ?? defaultCalendarId
         if let target, GoogleCalendarAPI.parseCalendarKey(target) != nil {
             guard let google else { throw WriteError.noGoogle }
-            try await google.create(title: title, start: start, end: end, calendarKey: target)
-            return
+            let id = try await google.create(title: title, start: start, end: end, calendarKey: target,
+                                             location: location, copying: template)
+            return .google(calendarKey: target, eventId: id)
         }
         let e = EKEvent(eventStore: store)
         e.title = title
         e.startDate = start
         e.endDate = end
         e.calendar = target.flatMap { store.calendar(withIdentifier: $0) } ?? store.defaultCalendarForNewEvents
+        e.location = location
+        e.notes = notes
+        if let t = template {
+            e.isAllDay = t.isAllDay
+            e.availability = t.isBusy ? .busy : .free
+            e.alarms = t.reminders.map { EKAlarm(relativeOffset: -Double($0) * 60) }
+        }
         guard e.calendar != nil else { throw WriteError.readOnly }
         try store.save(e, span: .thisEvent, commit: true)
+        return e.eventIdentifier.map { .system(identifier: $0) }
+    }
+
+    /// Removes an event this app just created.
+    func delete(_ created: CreatedEvent) async throws {
+        switch created {
+        case .google(let key, let id):
+            guard let google else { throw WriteError.noGoogle }
+            try await google.delete(calendarKey: key, eventId: id)
+        case .system(let identifier):
+            guard let e = store.event(withIdentifier: identifier) else { return }
+            try store.remove(e, span: .thisEvent, commit: true)
+        }
     }
 
     /// Weekly recurring event (class meetings) from `firstStart` until `until`.

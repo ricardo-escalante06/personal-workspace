@@ -17,6 +17,7 @@ struct CalendarView: View {
     @State private var placed: [LocalDate: [PlacedItem]] = [:]
     @State private var selection: Set<String> = []
     @State private var createRequest: CalendarCreateRequest?
+    @State private var popoverItemId: String?
     @FocusState private var focused: Bool
 
     private var tz: TimeZone { .current }
@@ -61,7 +62,8 @@ struct CalendarView: View {
                     onMove: move,
                     onClick: click,
                     onOpen: open,
-                    onScrollDays: { scrollDays($0) }
+                    onScrollDays: { scrollDays($0) },
+                    popoverItemId: $popoverItemId
                 )
             case .month:
                 MonthGridView(
@@ -89,7 +91,7 @@ struct CalendarView: View {
         #endif
         .task(id: LoadKey(days: days, scope: model.calendarScope, revision: source.revision,
                           hidden: source.effectiveHiddenCalendarIds, access: source.access,
-                          overrides: model.eventOverrides)) {
+                          overrides: model.eventOverrides, creates: Set(model.pendingEventCreates.keys))) {
             await load()
         }
         // While the calendar is open, ask macOS to pull Google/iCloud changes every minute.
@@ -130,6 +132,31 @@ struct CalendarView: View {
             selection = []
             return .handled
         }
+        // When a details popover closes, keys (⌘C, ⌘V, Delete) go back to the calendar.
+        .onChange(of: popoverItemId) { _, id in if id == nil { focused = true } }
+        #if os(macOS)
+        // Edit › Copy / Cut / Paste (⌘C / ⌘X / ⌘V) while the calendar has focus.
+        .onCommand(#selector(NSText.copy(_:))) { copySelection() }
+        .onCommand(#selector(NSText.cut(_:))) { copySelection(); model.deleteCalendarItems(items.filter { selection.contains($0.id) }) }
+        .onCommand(#selector(NSText.paste(_:))) { paste() }
+        #endif
+    }
+
+    /// ⌘C: work blocks and events (deadlines aren't copied; they belong to their task).
+    private func copySelection() {
+        let picked = items.filter { selection.contains($0.id) && !$0.isDeadline }
+        guard !picked.isEmpty else { return }
+        model.calendarClipboard = picked
+    }
+
+    /// ⌘V: a copy in the same spot as the original, selected so you can drag it where
+    /// it goes. ⌘Z removes it.
+    private func paste() {
+        let clip = model.calendarClipboard
+        guard !clip.isEmpty else { return }
+        popoverItemId = nil
+        let newIds = model.pasteCalendarItems(clip, shift: 0)
+        if !newIds.isEmpty { selection = Set(newIds) }
     }
 
     #if os(macOS)
@@ -160,6 +187,7 @@ struct CalendarView: View {
         var hidden: Set<String>
         var access: CalendarSource.Access
         var overrides: [String: AppModel.EventOverride]
+        var creates: Set<String>
     }
 
     /// Loads events from EventKit for the range, then keeps task data live via GRDB.
@@ -393,16 +421,17 @@ struct CalendarView: View {
 
     // MARK: Styling
 
+    /// The edge line is the calendar's color (or the class/project it belongs to);
+    /// the fill is the event's own color when it has one.
     private func style(for item: CalendarItem) -> BlockStyle {
+        let eventFill = item.event?.eventColor.map { Color(hex: $0).opacity(0.38) }
         if let c = model.container(item.containerId) {
             let cc = ContainerColor(named: c.color)
-            return BlockStyle(accent: cc.accent, fill: cc.fill)
+            return BlockStyle(accent: cc.accent, fill: eventFill ?? cc.fill)
         }
         if let e = item.event {
-            // Unlinked events use their calendar's color (or your override).
-            // Google per-event color wins, then your calendar override, then the calendar's color.
-            let hex = e.eventColor ?? source.color(forCalendar: e.calendarId, fallback: e.calendarColor)
-            return BlockStyle(accent: Color(hex: hex), fill: Color(hex: hex).opacity(0.28))
+            let calendar = Color(hex: source.color(forCalendar: e.calendarId, fallback: e.calendarColor))
+            return BlockStyle(accent: calendar, fill: eventFill ?? calendar.opacity(0.28))
         }
         return BlockStyle(accent: ContainerColor.grey.accent, fill: ContainerColor.grey.fill)
     }
@@ -416,11 +445,19 @@ struct CalendarView: View {
         } else {
             selection = [item.id]
         }
+        // One click shows the details (⇧/⌘-click just adds to the selection). On the Mac
+        // they pop up beside the block, unless the side panel is already open.
+        #if os(macOS)
+        let usePopover = !additive && !model.showInspector
+        #else
+        let usePopover = false
+        #endif
         if let taskId = item.taskId {
-            model.select(taskId)
+            if additive || usePopover { model.select(taskId) } else { model.openDetails(taskId) }
         } else if let event = item.event {
-            model.inspect(event, open: false)
+            model.inspect(event, open: !additive && !usePopover)
         }
+        if usePopover { popoverItemId = item.id }
     }
 
     private func open(_ item: CalendarItem) {

@@ -609,6 +609,15 @@ private struct PhoneEventDialogs: ViewModifier {
     func body(content: Content) -> some View {
         content
             .confirmationDialog(
+                "Change this repeating event?",
+                isPresented: Binding(get: { model.pendingEventEdit != nil }, set: { if !$0 { model.pendingEventEdit = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("Only This Event") { model.confirmEventEdit(wholeSeries: false) }
+                Button("All Events") { model.confirmEventEdit(wholeSeries: true) }
+                Button("Cancel", role: .cancel) { model.pendingEventEdit = nil }
+            }
+            .confirmationDialog(
                 model.pendingEventMove?.title ?? "Move event?",
                 isPresented: Binding(get: { model.pendingEventMove != nil }, set: { if !$0 { model.cancelEventMove() } }),
                 titleVisibility: .visible

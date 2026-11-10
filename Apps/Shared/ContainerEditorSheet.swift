@@ -165,11 +165,15 @@ struct ContainerEditorSheet: View {
 /// Colored dots for menus. Menus draw SF Symbols as monochrome templates, so the
 /// swatch is rendered as a non-template image.
 enum ColorSwatchImage {
-    static func image(for color: ContainerColor) -> Image {
+    static func image(hex: UInt32) -> Image { swatch(Color(hex: hex)) }
+
+    static func image(for color: ContainerColor) -> Image { swatch(color.accent) }
+
+    private static func swatch(_ color: Color) -> Image {
         #if os(macOS)
         let size = NSSize(width: 12, height: 12)
         let image = NSImage(size: size, flipped: false) { rect in
-            NSColor(color.accent).setFill()
+            NSColor(color).setFill()
             NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5)).fill()
             return true
         }
@@ -178,7 +182,7 @@ enum ColorSwatchImage {
         #else
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: 12, height: 12))
         let image = renderer.image { _ in
-            UIColor(color.accent).setFill()
+            UIColor(color).setFill()
             UIBezierPath(ovalIn: CGRect(x: 0.5, y: 0.5, width: 11, height: 11)).fill()
         }
         return Image(uiImage: image.withRenderingMode(.alwaysOriginal))
