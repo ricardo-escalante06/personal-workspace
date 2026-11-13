@@ -608,6 +608,7 @@ private struct PhoneEventDialogs: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .modifier(GuestNoticeDialog())
             .confirmationDialog(
                 "Change this repeating event?",
                 isPresented: Binding(get: { model.pendingEventEdit != nil }, set: { if !$0 { model.pendingEventEdit = nil } }),

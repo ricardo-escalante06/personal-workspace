@@ -200,6 +200,18 @@ public enum GoogleCalendarAPI {
         event.isTentative = event.isAwaitingResponse || e.status == "tentative"
         event.conferenceURL = video.flatMap(URL.init(string:))
         event.conferenceName = e.conferenceData?.conferenceSolution?.name ?? (e.hangoutLink != nil ? "Google Meet" : nil)
+        // No Meet: a link as the location, or as the description's first line, is the
+        // join link (Zoom, Teams…).
+        if event.conferenceURL == nil {
+            if let link = ConferenceLink.url(in: e.location) {
+                event.conferenceURL = link
+                event.customLinkSpot = .location
+            } else if let link = ConferenceLink.url(in: ConferenceLink.firstLine(of: e.description)) {
+                event.conferenceURL = link
+                event.customLinkSpot = .notes
+            }
+            if let link = event.conferenceURL { event.conferenceName = ConferenceLink.name(for: link) }
+        }
         event.htmlLink = e.htmlLink.flatMap(URL.init(string:))
         event.isBusy = e.transparency != "transparent"
         event.reminders = reminderMinutes.sorted()

@@ -14,6 +14,7 @@ import WorkspaceUI
 ///  - sideways scroll / swipe → move one day at a time
 struct TimeGridView: View {
     @Environment(AppModel.self) private var model
+    @AppStorage("allDayExpanded") private var allDayExpanded = false
 
     let days: [LocalDate]
     let items: [CalendarItem]
@@ -143,7 +144,7 @@ struct TimeGridView: View {
 
     private var allDayRow: some View {
         let allDay = items.filter(\.isAllDay)
-        let maxShown = 3
+        let maxShown = allDayExpanded ? Int.max : 3
         return HStack(alignment: .top, spacing: 0) {
             Text("All-day")
                 .font(.system(size: 10, weight: .medium))
@@ -159,10 +160,9 @@ struct TimeGridView: View {
                         allDayChip(item)
                     }
                     if chips.count > maxShown {
-                        Text("+\(chips.count - maxShown) more")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(WSColor.textTertiary)
-                            .padding(.leading, 4)
+                        allDayToggle("+\(chips.count - maxShown) more")
+                    } else if allDayExpanded && chips.count > 3 {
+                        allDayToggle("Show less")
                     }
                 }
                 .padding(3)
@@ -170,6 +170,20 @@ struct TimeGridView: View {
                 .overlay(alignment: .leading) { Rectangle().fill(WSColor.hairline).frame(width: 1) }
             }
         }
+    }
+
+    /// "+N more" opens the all-day row up to show (and drag) everything; remembered.
+    private func allDayToggle(_ title: String) -> some View {
+        Button {
+            withAnimation(.smooth(duration: 0.2)) { allDayExpanded.toggle() }
+        } label: {
+            Text(title)
+                .font(.system(size: 10.5))
+                .foregroundStyle(WSColor.textTertiary)
+                .padding(.leading, 4)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func allDayChip(_ item: CalendarItem) -> some View {

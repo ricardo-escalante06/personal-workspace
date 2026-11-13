@@ -19,10 +19,19 @@ public struct EventChanges: Sendable, Hashable {
     public var addGuests: [String] = []
     public var removeGuests: [String] = []
     public var addMeet = false
+    /// Takes the Google Meet link off the event.
+    public var removeMeet = false
     public var visibility: String?
     public init() {}
 
     public var isEmpty: Bool { self == EventChanges() }
+
+    /// Changes guests would want to hear about (Google emails them). Color, alerts,
+    /// busy/free, visibility and which of your calendars it's on are yours alone.
+    public var concernsGuests: Bool {
+        title != nil || location != nil || notes != nil || isAllDay != nil
+            || !addGuests.isEmpty || !removeGuests.isEmpty || addMeet || removeMeet
+    }
 }
 
 public enum GoogleEventColors {

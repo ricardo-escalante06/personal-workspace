@@ -60,6 +60,9 @@ public struct ExternalEvent: Identifiable, Sendable, Hashable {
     public var selfResponse: EventAttendee.Response?
     public var conferenceURL: URL?
     public var conferenceName: String?
+    /// Where a custom join link (Zoom, Teams…) is kept; nil for Meet or no link.
+    public var customLinkSpot: CustomLinkSpot?
+    public enum CustomLinkSpot: Sendable, Hashable { case location, notes }
     public var htmlLink: URL?
     /// "Busy" vs "Free" (transparency).
     public var isBusy = true
@@ -76,6 +79,12 @@ public struct ExternalEvent: Identifiable, Sendable, Hashable {
         selfResponse == .needsAction || selfResponse == .tentative
     }
     public var isDeclined: Bool { selfResponse == .declined }
+    /// Other people are invited and you're the organizer, so Google can email them
+    /// about changes you make.
+    public var hasGuestsToNotify: Bool {
+        provider == .google && organizer?.isSelf != false && attendees.contains { !$0.isSelf }
+    }
+
     /// You can RSVP: you're an attendee but not the organizer.
     public var canRSVP: Bool { selfResponse != nil && organizer?.isSelf != true }
 

@@ -40,6 +40,8 @@ public struct WeekStripView: View {
     let maxChips: Int
 
     @State private var dropTarget: LocalDate?
+    /// "+N more" opens every day up to show (and drag) all its chips; remembered.
+    @AppStorage("weekStripExpanded") private var expanded = false
 
     public init(days: [WeekDay], today: LocalDate, selectedTaskIds: Set<UUID>, maxChips: Int = 5,
                 colorFor: @escaping (TaskItem) -> ContainerColor,
@@ -122,6 +124,20 @@ public struct WeekStripView: View {
         }
     }
 
+    private func moreButton(_ title: String, help: String) -> some View {
+        Button {
+            withAnimation(.smooth(duration: 0.2)) { expanded.toggle() }
+        } label: {
+            Text(title)
+                .font(.system(size: 11))
+                .foregroundStyle(WSColor.textTertiary)
+                .padding(.horizontal, 4).padding(.vertical, 1)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
     private func navButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 11, weight: .semibold))
@@ -135,7 +151,7 @@ public struct WeekStripView: View {
 
     private func dayCell(_ day: WeekDay, isWeekend: Bool) -> some View {
         let isToday = day.date == today
-        let visible = day.chips.prefix(maxChips)
+        let visible = expanded ? day.chips[...] : day.chips.prefix(maxChips)
         let hidden = day.chips.count - visible.count
         return VStack(alignment: .leading, spacing: 3) {
             HStack {
@@ -156,10 +172,9 @@ public struct WeekStripView: View {
                     .draggable(chip.id)
             }
             if hidden > 0 {
-                Text("+\(hidden) more")
-                    .font(.system(size: 11))
-                    .foregroundStyle(WSColor.textTertiary)
-                    .padding(.leading, 4)
+                moreButton("+\(hidden) more", help: "Show every task this week")
+            } else if expanded && day.chips.count > maxChips {
+                moreButton("Show less", help: "Back to \(maxChips) per day")
             }
             Spacer(minLength: 0)
         }

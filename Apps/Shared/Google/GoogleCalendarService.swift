@@ -254,19 +254,19 @@ final class GoogleCalendarService {
         allDay ? ["date": LocalDate(date).description] : ["dateTime": ISODate.format(date), "timeZone": TimeZone.current.identifier]
     }
 
-    func move(_ event: ExternalEvent, start: Date, end: Date) async throws {
+    func move(_ event: ExternalEvent, start: Date, end: Date, notify: Bool = true) async throws {
         let loc = try location(event)
         let body: [String: Any] = ["start": dateTimeJSON(start, allDay: event.isAllDay),
                                    "end": dateTimeJSON(end, allDay: event.isAllDay)]
         let data = try await request(loc.email, "PATCH", "/calendars/\(Self.escape(loc.calendarId))/events/\(Self.escape(loc.eventId))",
-                                     query: ["sendUpdates": "all"], body: body)
+                                     query: ["sendUpdates": notify ? "all" : "none"], body: body)
         try store(data, email: loc.email, calendarId: loc.calendarId)
     }
 
-    func delete(_ event: ExternalEvent) async throws {
+    func delete(_ event: ExternalEvent, notify: Bool = true) async throws {
         let loc = try location(event)
         _ = try await request(loc.email, "DELETE", "/calendars/\(Self.escape(loc.calendarId))/events/\(Self.escape(loc.eventId))",
-                              query: ["sendUpdates": "all"])
+                              query: ["sendUpdates": notify ? "all" : "none"])
         caches[loc.email]?.events[loc.calendarId]?.removeValue(forKey: loc.eventId)
         Self.saveCache(caches[loc.email]!, loc.email)
         bump()
@@ -274,7 +274,7 @@ final class GoogleCalendarService {
 
     /// Shifts every occurrence of `event`'s series by `delta` and gives them `duration`.
     /// A move to another weekday also moves the repeat days (Mon/Wed → Tue/Thu).
-    func moveSeries(of event: ExternalEvent, delta: TimeInterval, duration: TimeInterval, dayShift: Int) async throws {
+    func moveSeries(of event: ExternalEvent, delta: TimeInterval, duration: TimeInterval, dayShift: Int, notify: Bool = true) async throws {
         let loc = try location(event)
         let master = caches[loc.email]?.events[loc.calendarId]?[loc.eventId]?.recurringEventId ?? loc.eventId
         let path = "/calendars/\(Self.escape(loc.calendarId))/events/\(Self.escape(master))"
@@ -288,14 +288,14 @@ final class GoogleCalendarService {
         if dayShift != 0, let rules = json["recurrence"] as? [String] {
             body["recurrence"] = rules.map { RecurrenceDays.shiftByDay(in: $0, by: dayShift) }
         }
-        _ = try await request(loc.email, "PATCH", path, query: ["sendUpdates": "all"], body: body)
+        _ = try await request(loc.email, "PATCH", path, query: ["sendUpdates": notify ? "all" : "none"], body: body)
         // Instances are re-expanded on the next sync.
         await sync(email: loc.email)
     }
 
     /// Saves panel edits. `wholeSeries` edits the repeating event itself instead of
     /// this occurrence. A calendar change uses Google's move call (same account only).
-    func update(_ event: ExternalEvent, _ changes: EventChanges, wholeSeries: Bool) async throws {
+    func update(_ event: ExternalEvent, _ changes: EventChanges, wholeSeries: Bool, notify: Bool = true) async throws {
         let loc = try location(event)
         let master = caches[loc.email]?.events[loc.calendarId]?[loc.eventId]?.recurringEventId
         let eventId = wholeSeries ? (master ?? loc.eventId) : loc.eventId
@@ -333,10 +333,13 @@ final class GoogleCalendarService {
             let existing = Set(current.compactMap { $0["email"] as? String })
             body["attendees"] = current + changes.addGuests.filter { !existing.contains($0) }.map { ["email": $0] }
         }
-        var query = ["sendUpdates": "all"]
+        var query = ["sendUpdates": notify ? "all" : "none"]
         if changes.addMeet {
             body["conferenceData"] = ["createRequest": ["requestId": UUID().uuidString,
                                                         "conferenceSolutionKey": ["type": "hangoutsMeet"]]]
+            query["conferenceDataVersion"] = "1"
+        } else if changes.removeMeet {
+            body["conferenceData"] = NSNull()
             query["conferenceDataVersion"] = "1"
         }
         var calendarId = loc.calendarId
@@ -348,7 +351,7 @@ final class GoogleCalendarService {
         if let target = changes.calendarId, let ref = GoogleCalendarAPI.parseCalendarKey(target),
            ref.account == loc.email, ref.calendarId != calendarId {
             _ = try await request(loc.email, "POST", "/calendars/\(Self.escape(calendarId))/events/\(Self.escape(master ?? loc.eventId))/move",
-                                  query: ["destination": ref.calendarId, "sendUpdates": "all"])
+                                  query: ["destination": ref.calendarId, "sendUpdates": notify ? "all" : "none"])
             calendarId = ref.calendarId
         }
         await sync(email: loc.email)
@@ -356,7 +359,7 @@ final class GoogleCalendarService {
 
     /// "This and following": ends the series just before `event`, and (when moving)
     /// starts a copy of it at `newStart`. `newStart == nil` deletes the rest.
-    func editFollowing(of event: ExternalEvent, newStart: Date?, newEnd: Date?, dayShift: Int) async throws {
+    func editFollowing(of event: ExternalEvent, newStart: Date?, newEnd: Date?, dayShift: Int, notify: Bool = true) async throws {
         let loc = try location(event)
         let master = caches[loc.email]?.events[loc.calendarId]?[loc.eventId]?.recurringEventId ?? loc.eventId
         let path = "/calendars/\(Self.escape(loc.calendarId))/events/\(Self.escape(master))"
@@ -369,13 +372,13 @@ final class GoogleCalendarService {
         if abs(seriesStart.timeIntervalSince(event.start)) < 60 {
             if let newStart, let newEnd {
                 try await moveSeries(of: event, delta: newStart.timeIntervalSince(event.start),
-                                     duration: newEnd.timeIntervalSince(newStart), dayShift: dayShift)
+                                     duration: newEnd.timeIntervalSince(newStart), dayShift: dayShift, notify: notify)
             } else {
-                try await deleteSeries(of: event)
+                try await deleteSeries(of: event, notify: notify)
             }
             return
         }
-        _ = try await request(loc.email, "PATCH", path, query: ["sendUpdates": "all"],
+        _ = try await request(loc.email, "PATCH", path, query: ["sendUpdates": notify ? "all" : "none"],
                               body: ["recurrence": rules.map { RecurrenceDays.ending($0, before: event.start) }])
         if let newStart, let newEnd {
             var body: [String: Any] = ["start": dateTimeJSON(newStart, allDay: false),
@@ -385,17 +388,17 @@ final class GoogleCalendarService {
                 if let v = json[key] { body[key] = v }
             }
             _ = try await request(loc.email, "POST", "/calendars/\(Self.escape(loc.calendarId))/events",
-                                  query: ["sendUpdates": "all"], body: body)
+                                  query: ["sendUpdates": notify ? "all" : "none"], body: body)
         }
         await sync(email: loc.email)
     }
 
     /// Deletes the whole recurring series `event` is an instance of.
-    func deleteSeries(of event: ExternalEvent) async throws {
+    func deleteSeries(of event: ExternalEvent, notify: Bool = true) async throws {
         let loc = try location(event)
         let master = caches[loc.email]?.events[loc.calendarId]?[loc.eventId]?.recurringEventId ?? loc.eventId
         _ = try await request(loc.email, "DELETE", "/calendars/\(Self.escape(loc.calendarId))/events/\(Self.escape(master))",
-                              query: ["sendUpdates": "all"])
+                              query: ["sendUpdates": notify ? "all" : "none"])
         let remaining = caches[loc.email]?.events[loc.calendarId]?
             .filter { $0.key != master && $0.value.recurringEventId != master }
         caches[loc.email]?.events[loc.calendarId] = remaining

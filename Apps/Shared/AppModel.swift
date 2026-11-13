@@ -71,6 +71,8 @@ final class AppModel {
     var pendingEventMove: PendingEventMove?
     var pendingEventDelete: [ExternalEvent] = []
     var pendingEventEdit: PendingEventEdit?
+    /// "Email guests about this change?" waiting for Send / Don't Send.
+    var pendingGuestNotice: PendingGuestNotice?
     /// Calendar items copied with ⌘C.
     var calendarClipboard: [CalendarItem] = []
     /// Event moves/deletes that are saving (or waiting on "This / Following / All").
@@ -118,7 +120,17 @@ final class AppModel {
     @ObservationIgnored private var selectionAnchor: UUID?
     /// Calendar event shown in the inspector (instead of a task).
     var inspectedEvent: ExternalEvent?
-    var showInspector = false
+    /// Which window you're working in (the main one, or the calendar's own window):
+    /// dialogs, sheets and the details panel follow it.
+    enum WindowKind { case main, calendar }
+    var activeWindow: WindowKind = .main
+    var showMainInspector = false
+    var showCalendarInspector = false
+    /// The details panel of the window you're in.
+    var showInspector: Bool {
+        get { activeWindow == .calendar ? showCalendarInspector : showMainInspector }
+        set { if activeWindow == .calendar { showCalendarInspector = newValue } else { showMainInspector = newValue } }
+    }
     /// The window's undo manager (set by RootView) so ⌘Z / Edit › Undo covers task actions.
     @ObservationIgnored weak var undoManager: UndoManager?
     /// The week shown by the dashboard week strip (shared across scopes).
@@ -856,18 +868,73 @@ final class AppModel {
         if event.isRecurring {
             pendingEventEdit = PendingEventEdit(event: event, changes: changes)
         } else {
-            commitEventEdit(event, changes, wholeSeries: false)
+            editAfterAskingGuests(event, changes, wholeSeries: false)
         }
     }
 
     func confirmEventEdit(wholeSeries: Bool) {
         guard let p = pendingEventEdit else { return }
         pendingEventEdit = nil
-        commitEventEdit(p.event, p.changes, wholeSeries: wholeSeries)
+        editAfterAskingGuests(p.event, p.changes, wholeSeries: wholeSeries)
+    }
+
+    private func editAfterAskingGuests(_ event: ExternalEvent, _ changes: EventChanges, wholeSeries: Bool) {
+        askGuests([event], about: changes.concernsGuests, cancel: { [weak self] in
+            // Put the panel back to what's saved.
+            if self?.inspectedEvent?.key == event.key { self?.inspectedEvent = event }
+        }) { [weak self] notify in
+            self?.commitEventEdit(event, changes, wholeSeries: wholeSeries, notify: notify)
+        }
+    }
+
+    // MARK: Guest emails
+
+    enum GuestEmails: String, CaseIterable, Identifiable {
+        case ask, always, never
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .ask: "Ask each time"
+            case .always: "Always send"
+            case .never: "Never send"
+            }
+        }
+    }
+
+    /// Whether Google emails guests when you change an event you organize.
+    var guestEmails: GuestEmails {
+        get { GuestEmails(rawValue: UserDefaults.standard.string(forKey: "guestEmails") ?? "") ?? .ask }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "guestEmails") }
+    }
+
+    /// Runs `commit(notify)` once it's known whether to email guests: asks when one of
+    /// `events` has guests (and you organize it) and the change matters to them.
+    private func askGuests(_ events: [ExternalEvent], about relevant: Bool = true,
+                           cancel: @escaping () -> Void, _ commit: @escaping (Bool) -> Void) {
+        let withGuests = events.filter(\.hasGuestsToNotify)
+        guard relevant, !withGuests.isEmpty else { return commit(false) }
+        switch guestEmails {
+        case .always: commit(true)
+        case .never: commit(false)
+        case .ask:
+            let guests = Set(withGuests.flatMap { $0.attendees.filter { !$0.isSelf }.map(\.email) }).count
+            let notice = PendingGuestNotice(guestCount: guests, send: commit, cancel: cancel)
+            // Wait for any dialog that led here to finish closing, or this one won't show.
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(300))
+                self.pendingGuestNotice = notice
+            }
+        }
+    }
+
+    func answerGuestNotice(_ send: Bool?) {
+        guard let n = pendingGuestNotice else { return }
+        pendingGuestNotice = nil
+        if let send { n.send(send) } else { n.cancel() }
     }
 
     /// Shows the edit at once; if saving to the calendar fails, the old values come back.
-    private func commitEventEdit(_ event: ExternalEvent, _ changes: EventChanges, wholeSeries: Bool) {
+    private func commitEventEdit(_ event: ExternalEvent, _ changes: EventChanges, wholeSeries: Bool, notify: Bool) {
         if case .edited(var pending) = eventOverrides[event.key] {
             // Several quick edits to one event: show them all.
             if let t = changes.title { pending.title = t }
@@ -876,14 +943,19 @@ final class AppModel {
             if let c = changes.colorId { pending.colorId = c }
             if let b = changes.isBusy { pending.isBusy = b }
             if let r = changes.reminders { pending.reminders = r }
+            if changes.removeMeet { pending.removeMeet = true }
             eventOverrides[event.key] = .edited(pending)
         } else if eventOverrides[event.key] == nil {
             eventOverrides[event.key] = .edited(changes)
         }
+        // The side panel holds its own copy of the event: show the change there too.
+        if let shown = inspectedEvent, shown.key == event.key, let updated = applyingOverrides([shown]).last {
+            inspectedEvent = updated
+        }
         let source = calendarSource
         Task {
             do {
-                try await source.update(event, changes, wholeSeries: wholeSeries)
+                try await source.update(event, changes, wholeSeries: wholeSeries, notify: notify)
                 try? await Task.sleep(for: .seconds(2))
             } catch GoogleAuth.AuthError.cancelled {
             } catch {
@@ -996,14 +1068,22 @@ final class AppModel {
         if pending.hasRepeating {
             pendingEventMove = pending
         } else {
-            commitEventMoves(moves, scope: .one)
+            moveAfterAskingGuests(moves, scope: .one)
         }
     }
 
     func confirmEventMove(_ scope: EventEditScope) {
         guard let pending = pendingEventMove else { return }
         pendingEventMove = nil
-        commitEventMoves(pending.moves, scope: scope)
+        moveAfterAskingGuests(pending.moves, scope: scope)
+    }
+
+    private func moveAfterAskingGuests(_ moves: [PendingEventMove.Move], scope: EventEditScope) {
+        askGuests(moves.map(\.event), cancel: { [weak self] in
+            for m in moves { self?.eventOverrides[m.event.key] = nil }   // back where it was
+        }) { [weak self] notify in
+            self?.commitEventMoves(moves, scope: scope, notify: notify)
+        }
     }
 
     func cancelEventMove() {
@@ -1011,12 +1091,12 @@ final class AppModel {
         pendingEventMove = nil
     }
 
-    private func commitEventMoves(_ moves: [PendingEventMove.Move], scope: EventEditScope) {
+    private func commitEventMoves(_ moves: [PendingEventMove.Move], scope: EventEditScope, notify: Bool) {
         let keys = moves.map(\.event.key)
         let source = calendarSource
         Task {
             do {
-                for m in moves { try await source.move(m.event, start: m.start, end: m.end, scope: scope) }
+                for m in moves { try await source.move(m.event, start: m.start, end: m.end, scope: scope, notify: notify) }
                 // Let the calendar reload with the saved times before dropping the stand-ins.
                 try? await Task.sleep(for: .seconds(2))
             } catch GoogleAuth.AuthError.cancelled {
@@ -1037,12 +1117,6 @@ final class AppModel {
         }
         pendingEventDelete = events
         confirmEventDelete(.one)
-        undoManager?.registerUndo(withTarget: self) { model in
-            MainActor.assumeIsolated { model.restoreDeletedEvents(events) }
-        }
-        let name = events.count == 1 ? "“\(events[0].title)”" : "\(events.count) events"
-        undoManager?.setActionName("Delete \(name)")
-        showToast(Toast(message: "Deleted \(name)", undo: { [weak self] in self?.undoManager?.undo() }))
     }
 
     /// Undo for a delete: the events come back as new copies with the same settings.
@@ -1059,11 +1133,29 @@ final class AppModel {
     func confirmEventDelete(_ scope: EventEditScope = .one) {
         let events = pendingEventDelete
         pendingEventDelete = []
+        // Gone from the screen at once, even while the guest question is up.
         for e in events { eventOverrides[e.key] = .deleted }
+        askGuests(events, cancel: { [weak self] in
+            for e in events { self?.eventOverrides[e.key] = nil }
+        }) { [weak self] notify in
+            self?.commitEventDelete(events, scope: scope, notify: notify)
+        }
+    }
+
+    private func commitEventDelete(_ events: [ExternalEvent], scope: EventEditScope, notify: Bool) {
+        if !events.contains(where: \.isRecurring) {
+            // ⌘Z (or the toast's Undo) puts plain events back.
+            undoManager?.registerUndo(withTarget: self) { model in
+                MainActor.assumeIsolated { model.restoreDeletedEvents(events) }
+            }
+            let name = events.count == 1 ? "“\(events[0].title)”" : "\(events.count) events"
+            undoManager?.setActionName("Delete \(name)")
+            showToast(Toast(message: "Deleted \(name)", undo: { [weak self] in self?.undoManager?.undo() }))
+        }
         let source = calendarSource
         Task {
             do {
-                for e in events { try await source.delete(e, scope: scope) }
+                for e in events { try await source.delete(e, scope: scope, notify: notify) }
                 try? await Task.sleep(for: .seconds(2))
             } catch GoogleAuth.AuthError.cancelled {
             } catch {
@@ -1094,6 +1186,19 @@ final class AppModel {
                 if let color = c.colorId { e.eventColor = color.flatMap(GoogleEventColors.hex) }
                 if let b = c.isBusy { e.isBusy = b }
                 if let r = c.reminders { e.reminders = r }
+                if c.removeMeet || (e.customLinkSpot == .location && c.location != nil)
+                    || (e.customLinkSpot == .notes && c.notes != nil) {
+                    e.conferenceURL = nil; e.conferenceName = nil; e.customLinkSpot = nil
+                }
+                // A link just added as the location / description's first line.
+                if e.conferenceURL == nil {
+                    if let link = ConferenceLink.url(in: e.location) {
+                        e.conferenceURL = link; e.customLinkSpot = .location
+                    } else if e.provider == .google, let link = ConferenceLink.url(in: ConferenceLink.firstLine(of: e.notes)) {
+                        e.conferenceURL = link; e.customLinkSpot = .notes
+                    }
+                    if let link = e.conferenceURL { e.conferenceName = ConferenceLink.name(for: link) }
+                }
                 return e
             }
         }
@@ -1313,6 +1418,13 @@ struct ContainerEditorRequest: Identifiable {
     }
     let id = UUID()
     var mode: Mode
+}
+
+struct PendingGuestNotice: Identifiable {
+    let id = UUID()
+    var guestCount: Int
+    var send: (Bool) -> Void
+    var cancel: () -> Void
 }
 
 struct PendingEventEdit: Identifiable {

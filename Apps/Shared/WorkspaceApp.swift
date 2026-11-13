@@ -53,6 +53,7 @@ struct WorkspaceApp: App {
                     .keyboardShortcut("2")
                 Button("Calendar") { model.selection = .calendar }
                     .keyboardShortcut("3")
+                OpenCalendarWindowButton(menuItem: true)
                 Divider()
                 Button("Day View") { model.calendarMode = .day; model.selection = .calendar }
                     .keyboardShortcut("1", modifiers: [.command, .control])
@@ -74,6 +75,12 @@ struct WorkspaceApp: App {
         }
         #endif
         #if os(macOS)
+        Window("Calendar", id: CalendarWindow.id) {
+            CalendarWindow()
+                .environment(model)
+                .preferredColorScheme(.dark)
+        }
+        .defaultSize(width: 900, height: 760)
         Settings {
             SettingsView()
                 .environment(model)

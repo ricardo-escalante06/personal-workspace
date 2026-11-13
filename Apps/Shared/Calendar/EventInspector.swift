@@ -27,8 +27,10 @@ struct EventInspector: View {
     @State private var showColors = false
     @State private var newGuest = ""
     @State private var removedGuests: Set<String> = []
+    @State private var addingLink = false
+    @State private var linkDraft = ""
     @FocusState private var focus: Field?
-    private enum Field { case title, location, notes }
+    private enum Field { case title, location, notes, link }
 
     private var editable: Bool { event.isWritable }
 
@@ -289,16 +291,9 @@ struct EventInspector: View {
     private var whereSection: some View {
         section {
             VStack(alignment: .leading, spacing: 10) {
-                if event.conferenceURL == nil, editable, event.provider == .google {
-                    row(icon: "video") {
-                        Button("Add Google Meet") { save { $0.addMeet = true } }
-                            .buttonStyle(.borderless)
-                            .font(.system(size: 12.5))
-                    }
-                }
                 if let url = event.conferenceURL {
                     row(icon: "video") {
-                        HStack {
+                        HStack(spacing: 8) {
                             Link(destination: url) {
                                 Text("Join \(event.conferenceName ?? "call")")
                                     .font(.system(size: 12.5, weight: .semibold))
@@ -307,17 +302,48 @@ struct EventInspector: View {
                                     .foregroundStyle(.white)
                             }
                             Text(url.host ?? "").font(.system(size: 11)).foregroundStyle(WSColor.textTertiary).lineLimit(1)
+                            Spacer(minLength: 0)
+                            Menu {
+                                Button("Copy Link") { Platform.copy(url.absoluteString) }
+                                if editable {
+                                    Button("Remove Link", role: .destructive) { removeLink() }
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis").font(.system(size: 11))
+                            }
+                            .menuStyle(.borderlessButton)
+                            .menuIndicator(.hidden)
+                            .fixedSize()
+                        }
+                    }
+                } else if editable {
+                    row(icon: "video") {
+                        if addingLink {
+                            TextField("Paste a Zoom, Teams or other link", text: $linkDraft)
+                                .textFieldStyle(.plain)
+                                .focused($focus, equals: .link)
+                                .onSubmit(addLink)
+                                .onEscape { addingLink = false; linkDraft = "" }
+                        } else {
+                            HStack(spacing: 14) {
+                                if event.provider == .google {
+                                    Button("Add Google Meet") { save { $0.addMeet = true } }
+                                }
+                                Button("Add link") { addingLink = true; focus = .link }
+                            }
+                            .buttonStyle(.borderless)
+                            .font(.system(size: 12.5))
                         }
                     }
                 }
-                if editable {
+                if editable, event.customLinkSpot != .location {
                     row(icon: "mappin.and.ellipse") {
                         TextField("Add location", text: $locationDraft)
                             .textFieldStyle(.plain)
                             .focused($focus, equals: .location)
                             .onSubmit(commitLocation)
                     }
-                } else if let location = event.location, !location.isEmpty {
+                } else if let location = event.location, !location.isEmpty, event.customLinkSpot != .location {
                     row(icon: "mappin.and.ellipse") {
                         if let maps = URL(string: "https://maps.apple.com/?q=\(location.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")") {
                             Link(location, destination: maps)
@@ -328,6 +354,38 @@ struct EventInspector: View {
                     }
                 }
             }
+        }
+    }
+
+    /// A custom link goes in the location when it's free (Google shows it as a link
+    /// there), otherwise on the description's first line.
+    private func addLink() {
+        guard let url = ConferenceLink.normalized(linkDraft) else { addingLink = linkDraft.isEmpty ? false : true; return }
+        addingLink = false
+        linkDraft = ""
+        let link = url.absoluteString
+        if (event.location ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
+            locationDraft = link
+            save { $0.location = link }
+        } else {
+            let notes = event.notes ?? ""
+            let combined = notes.isEmpty ? link : link + "\n" + notes
+            notesDraft = combined
+            save { $0.notes = combined }
+        }
+    }
+
+    private func removeLink() {
+        switch event.customLinkSpot {
+        case .location:
+            locationDraft = ""
+            save { $0.location = "" }
+        case .notes:
+            let rest = ConferenceLink.droppingFirstLine(of: event.notes)
+            notesDraft = rest
+            save { $0.notes = rest }
+        case nil:
+            save { $0.removeMeet = true }
         }
     }
 

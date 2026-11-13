@@ -260,14 +260,14 @@ final class CalendarSource {
     }
 
     /// Moves `event` (one occurrence, it and the ones after, or the whole series).
-    func move(_ event: ExternalEvent, start: Date, end: Date, scope: EventEditScope) async throws {
-        guard event.isRecurring, scope != .one else { return try await move(event, start: start, end: end) }
-        if scope == .all { return try await moveSeries(event, start: start, end: end) }
+    func move(_ event: ExternalEvent, start: Date, end: Date, scope: EventEditScope, notify: Bool = true) async throws {
+        guard event.isRecurring, scope != .one else { return try await move(event, start: start, end: end, notify: notify) }
+        if scope == .all { return try await moveSeries(event, start: start, end: end, notify: notify) }
         let cal = Calendar.current
         let dayShift = cal.dateComponents([.day], from: cal.startOfDay(for: event.start), to: cal.startOfDay(for: start)).day ?? 0
         if event.provider == .google {
             guard let google else { throw WriteError.noGoogle }
-            try await google.editFollowing(of: event, newStart: start, newEnd: end, dayShift: dayShift)
+            try await google.editFollowing(of: event, newStart: start, newEnd: end, dayShift: dayShift, notify: notify)
             return
         }
         guard let e = findEvent(event) else { throw WriteError.notFound }
@@ -279,10 +279,10 @@ final class CalendarSource {
     }
 
     /// Saves edits from the event panel (title, place, notes, color, busy, alerts, calendar).
-    func update(_ event: ExternalEvent, _ changes: EventChanges, wholeSeries: Bool) async throws {
+    func update(_ event: ExternalEvent, _ changes: EventChanges, wholeSeries: Bool, notify: Bool = true) async throws {
         if event.provider == .google {
             guard let google else { throw WriteError.noGoogle }
-            try await google.update(event, changes, wholeSeries: wholeSeries)
+            try await google.update(event, changes, wholeSeries: wholeSeries, notify: notify)
             return
         }
         let target = wholeSeries && event.isRecurring ? (store.event(withIdentifier: event.localId) ?? findEvent(event)) : findEvent(event)
@@ -311,12 +311,12 @@ final class CalendarSource {
     }
 
     /// Deletes one occurrence, it and the ones after, or the whole series.
-    func delete(_ event: ExternalEvent, scope: EventEditScope) async throws {
-        guard event.isRecurring, scope != .one else { return try await delete(event) }
+    func delete(_ event: ExternalEvent, scope: EventEditScope, notify: Bool = true) async throws {
+        guard event.isRecurring, scope != .one else { return try await delete(event, notify: notify) }
         if event.provider == .google {
             guard let google else { throw WriteError.noGoogle }
-            if scope == .all { try await google.deleteSeries(of: event) }
-            else { try await google.editFollowing(of: event, newStart: nil, newEnd: nil, dayShift: 0) }
+            if scope == .all { try await google.deleteSeries(of: event, notify: notify) }
+            else { try await google.editFollowing(of: event, newStart: nil, newEnd: nil, dayShift: 0, notify: notify) }
             return
         }
         let target = scope == .all ? (store.event(withIdentifier: event.localId) ?? findEvent(event)) : findEvent(event)
@@ -339,14 +339,14 @@ final class CalendarSource {
     }
 
     /// Moves a repeating event's whole series by the same amount `event` moved.
-    func moveSeries(_ event: ExternalEvent, start: Date, end: Date) async throws {
+    func moveSeries(_ event: ExternalEvent, start: Date, end: Date, notify: Bool = true) async throws {
         let delta = start.timeIntervalSince(event.start)
         let duration = end.timeIntervalSince(start)
         let cal = Calendar.current
         let dayShift = cal.dateComponents([.day], from: cal.startOfDay(for: event.start), to: cal.startOfDay(for: start)).day ?? 0
         if event.provider == .google {
             guard let google else { throw WriteError.noGoogle }
-            try await google.moveSeries(of: event, delta: delta, duration: duration, dayShift: dayShift)
+            try await google.moveSeries(of: event, delta: delta, duration: duration, dayShift: dayShift, notify: notify)
             return
         }
         // EventKit hands back the first occurrence for the series' identifier.
@@ -359,10 +359,10 @@ final class CalendarSource {
         try store.save(first, span: .futureEvents, commit: true)
     }
 
-    func move(_ event: ExternalEvent, start: Date, end: Date) async throws {
+    func move(_ event: ExternalEvent, start: Date, end: Date, notify: Bool = true) async throws {
         if event.provider == .google {
             guard let google else { throw WriteError.noGoogle }
-            try await google.move(event, start: start, end: end)
+            try await google.move(event, start: start, end: end, notify: notify)
             return
         }
         guard let e = findEvent(event) else { throw WriteError.notFound }
@@ -372,10 +372,10 @@ final class CalendarSource {
         try store.save(e, span: .thisEvent, commit: true)
     }
 
-    func delete(_ event: ExternalEvent) async throws {
+    func delete(_ event: ExternalEvent, notify: Bool = true) async throws {
         if event.provider == .google {
             guard let google else { throw WriteError.noGoogle }
-            try await google.delete(event)
+            try await google.delete(event, notify: notify)
             return
         }
         guard let e = findEvent(event) else { throw WriteError.notFound }

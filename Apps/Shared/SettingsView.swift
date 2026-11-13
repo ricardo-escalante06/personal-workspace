@@ -26,6 +26,7 @@ struct AccountsSettings: View {
 /// Google accounts and system calendar access (Mac Settings, iPhone Settings tab).
 struct CalendarAccountsSections: View {
     @Environment(AppModel.self) private var model
+    @AppStorage("guestEmails") private var guestEmails = AppModel.GuestEmails.ask.rawValue
 
     var body: some View {
         let source = model.calendarSource
@@ -63,6 +64,15 @@ struct CalendarAccountsSections: View {
                     Text("Add GOOGLE_CLIENT_ID to Config/Secrets.xcconfig and rebuild to enable Google Calendar.")
                         .foregroundStyle(WSColor.textSecondary)
                 }
+            }
+            Section {
+                Picker("Email guests about changes", selection: $guestEmails) {
+                    ForEach(AppModel.GuestEmails.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+            } header: {
+                Text("Guests")
+            } footer: {
+                Text("For Google events you organize: moving, renaming, deleting, guest and link changes. Color and alerts never email anyone.")
             }
             Section("Other calendars on this \(Platform.deviceName)") {
                 switch source.access {

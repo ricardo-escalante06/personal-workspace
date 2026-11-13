@@ -25,28 +25,13 @@ struct RootView: View {
                         .id(model.selectedScope)
                 }
             }
-                .inspector(isPresented: $model.showInspector) {
-                    Group {
-                        if let event = model.inspectedEvent {
-                            EventInspector(event: event)
-                                .id(event.key)
-                        } else if let id = model.selectedTaskId {
-                            TaskInspector(taskId: id)
-                        } else {
-                            ContentUnavailableView("Select a task", systemImage: "sidebar.right",
-                                                   description: Text("Click any task to see its details."))
-                        }
-                    }
-                    // One fixed width for every task and event, so switching never resizes
-                    // the panel (or the window). Content wraps to fit instead of pushing out.
-                    .frame(width: Self.inspectorWidth)
-                    .frame(maxHeight: .infinity, alignment: .top)
-                    .clipped()
-                    .inspectorColumnWidth(Self.inspectorWidth)
-                }
+                .inspector(isPresented: $model.showMainInspector) { DetailsPanel() }
         }
         .toolbar {
             ToolbarItem { SyncStatusView() }
+            #if os(macOS)
+            ToolbarItem { OpenCalendarWindowButton() }
+            #endif
             ToolbarItem {
                 Button { model.showTagManager = true } label: {
                     Label("Tags", systemImage: "tag")
@@ -60,12 +45,7 @@ struct RootView: View {
                 .help("Show details (⌘I)")
             }
         }
-        .sheet(item: $model.quickAdd) { request in
-            QuickAddView(request: request, scope: model.selectedScope)
-        }
-        .sheet(isPresented: $model.showPalette) {
-            CommandPalette()
-        }
+        .modifier(WindowChrome(kind: .main))
         .overlay(alignment: .bottom) {
             VStack(spacing: WSSpace.s) {
                 ToastView()
@@ -87,16 +67,116 @@ struct RootView: View {
                 .opacity(0)
                 .frame(width: 0, height: 0)
         }
-        .modifier(RootDialogs())
-        .sheet(item: $model.containerEditor) { request in
-            ContainerEditorSheet(request: request)
+    }
+}
+
+/// The details panel: the selected event or task, at one fixed width so switching
+/// never resizes the panel (or the window). Content wraps instead of pushing out.
+struct DetailsPanel: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        Group {
+            if let event = model.inspectedEvent {
+                EventInspector(event: event)
+                    .id(event.key)
+            } else if let id = model.selectedTaskId {
+                TaskInspector(taskId: id)
+            } else {
+                ContentUnavailableView("Select a task", systemImage: "sidebar.right",
+                                       description: Text("Click any task to see its details."))
+            }
         }
-        .sheet(isPresented: $model.showTagManager) { TagManagerView() }
-        .sheet(item: $model.seriesEditor) { request in
-            AssignmentSeriesSheet(request: request)
+        .frame(width: RootView.inspectorWidth)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .clipped()
+        .inspectorColumnWidth(RootView.inspectorWidth)
+    }
+}
+
+/// Sheets and dialogs for a window. Only the window you're working in shows them
+/// (both windows share one model), and they hang off an empty background view so
+/// turning them on and off never rebuilds the window's content.
+struct WindowChrome: ViewModifier {
+    @Environment(AppModel.self) private var model
+    #if os(macOS)
+    @Environment(\.controlActiveState) private var activeState
+    #endif
+    @Environment(\.undoManager) private var undoManager
+    let kind: AppModel.WindowKind
+
+    func body(content: Content) -> some View {
+        @Bindable var model = model
+        content
+            .background {
+                if model.activeWindow == kind {
+                    Color.clear
+                        .sheet(item: $model.quickAdd) { request in
+                            QuickAddView(request: request, scope: model.selectedScope)
+                        }
+                        .sheet(isPresented: $model.showPalette) { CommandPalette() }
+                        .sheet(item: $model.containerEditor) { request in ContainerEditorSheet(request: request) }
+                        .sheet(isPresented: $model.showTagManager) { TagManagerView() }
+                        .sheet(item: $model.seriesEditor) { request in AssignmentSeriesSheet(request: request) }
+                        .modifier(RootDialogs())
+                }
+            }
+            #if os(macOS)
+            .onChange(of: activeState, initial: true) { _, state in
+                guard state == .key else { return }
+                model.activeWindow = kind
+                // ⌘Z works on the window you're in, so changes register there.
+                if let undoManager { model.undoManager = undoManager }
+            }
+            .onDisappear { if kind == .calendar { model.activeWindow = .main } }
+            #endif
+    }
+}
+
+#if os(macOS)
+/// "Open the calendar in its own window" (toolbar and View menu, ⇧⌘K).
+struct OpenCalendarWindowButton: View {
+    @Environment(\.openWindow) private var openWindow
+    var menuItem = false
+
+    var body: some View {
+        if menuItem {
+            Button("Open Calendar in New Window") { openWindow(id: CalendarWindow.id) }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
+        } else {
+            Button { openWindow(id: CalendarWindow.id) } label: {
+                Label("Calendar Window", systemImage: "macwindow.badge.plus")
+            }
+            .help("Open the calendar in its own window (⇧⌘K)")
         }
     }
 }
+
+/// The calendar on its own, so you can schedule with the dashboard open beside it.
+struct CalendarWindow: View {
+    static let id = "calendar"
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        @Bindable var model = model
+        CalendarView()
+            .inspector(isPresented: $model.showCalendarInspector) { DetailsPanel() }
+            .toolbar {
+                ToolbarItem { SyncStatusView() }
+                ToolbarItem {
+                    Button { model.showCalendarInspector.toggle() } label: {
+                        Label("Details", systemImage: "sidebar.right")
+                    }
+                    .help("Show details (⌘I)")
+                }
+            }
+            .navigationTitle("Calendar")
+            .overlay(alignment: .bottom) { ToastView().padding(.bottom, WSSpace.s) }
+            .modifier(WindowChrome(kind: .calendar))
+            .frame(minWidth: 640, minHeight: 480)
+    }
+}
+#endif
 
 #if os(macOS)
 extension RootView {
@@ -165,6 +245,7 @@ private struct EventDialogs: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .modifier(GuestNoticeDialog())
             .confirmationDialog(
                 "Change this repeating event?",
                 isPresented: Binding(get: { model.pendingEventEdit != nil }, set: { if !$0 { model.pendingEventEdit = nil } }),
@@ -214,6 +295,27 @@ private struct EventDialogs: ViewModifier {
 
     private var deleteCalendars: String {
         Set(model.pendingEventDelete.map(\.calendarTitle)).sorted().joined(separator: ", ")
+    }
+}
+
+/// "Email guests about this change?" (Mac and iPhone).
+struct GuestNoticeDialog: ViewModifier {
+    @Environment(AppModel.self) private var model
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(
+            "Email guests about this change?",
+            isPresented: Binding(get: { model.pendingGuestNotice != nil },
+                                 set: { if !$0 { model.answerGuestNotice(nil) } }),
+            titleVisibility: .visible
+        ) {
+            Button("Send") { model.answerGuestNotice(true) }
+            Button("Don't Send") { model.answerGuestNotice(false) }
+            Button("Cancel", role: .cancel) { model.answerGuestNotice(nil) }
+        } message: {
+            let n = model.pendingGuestNotice?.guestCount ?? 0
+            Text("Google Calendar will email \(n == 1 ? "1 guest" : "\(n) guests") an update. You can change this in Settings.")
+        }
     }
 }
 
