@@ -186,6 +186,10 @@ enum LocalSchema {
                 t.column("deleted_at", .datetime)
             }
         }
+        // Milestone colors.
+        m.registerMigration("v4-milestone-color") { db in
+            try db.alter(table: "tasks") { t in t.add(column: "color", .text) }
+        }
         return m
     }
 }

@@ -12,6 +12,7 @@ struct QuickAddView: View {
     let scope: UUID?
 
     @State private var text = ""
+    @State private var asMilestone = false
     @FocusState private var focused: Bool
 
     private var parser: QuickAddParser {
@@ -66,18 +67,41 @@ struct QuickAddView: View {
                 } else if let name = result.newTagName {
                     TokenChip(symbol: "tag", text: "New tag “\(name)”")
                 }
-                if let m = request.presetMilestone.flatMap(milestoneTitle) {
+                if let m = request.presetMilestone.flatMap(milestoneTitle), !(asMilestone && inProject(result)) {
                     TokenChip(symbol: "diamond", text: m)
                 }
                 if let p = result.priority {
                     TokenChip(symbol: "exclamationmark", text: "P\(p)")
                 }
             }
-            #if os(macOS)
-            Text("↩ to add · esc to cancel")
-                .font(.system(size: 11))
-                .foregroundStyle(WSColor.textTertiary)
-            #endif
+            HStack {
+                if inProject(result) {
+                    // Decide up front instead of creating a task and converting it.
+                    Button {
+                        asMilestone.toggle()
+                        focused = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: asMilestone ? "diamond.fill" : "diamond").imageScale(.small)
+                            Text("Milestone")
+                        }
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(asMilestone ? Color.white : WSColor.textSecondary)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Capsule().fill(asMilestone ? WSColor.action : WSColor.hairline))
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut("m", modifiers: [.command, .shift])
+                    .help("Make this a milestone (⇧⌘M)")
+                }
+                #if os(macOS)
+                Spacer()
+                Text("↩ to add · esc to cancel")
+                    .font(.system(size: 11))
+                    .foregroundStyle(WSColor.textTertiary)
+                #endif
+            }
         }
         .padding(WSSpace.l)
         #if os(macOS)
@@ -97,8 +121,14 @@ struct QuickAddView: View {
         let result = parsed
         guard !result.title.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         model.createTask(from: result, defaultScope: request.presetContainer ?? scope,
-                         milestoneId: request.presetMilestone, startDate: request.presetStart)
+                         milestoneId: request.presetMilestone, startDate: request.presetStart,
+                         asMilestone: asMilestone && inProject(result))
         dismiss()
+    }
+
+    /// The task is going into a project (so it can be a milestone).
+    private func inProject(_ r: QuickAddParser.Result) -> Bool {
+        model.container(r.containerId ?? request.presetContainer ?? scope)?.kind == .project
     }
 
     private func milestoneTitle(_ id: UUID) -> String? {

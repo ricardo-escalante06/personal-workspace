@@ -538,6 +538,11 @@ final class AppModel {
         }
     }
 
+    /// A milestone's color (nil = the project's). Its tasks follow it on the timeline.
+    func setMilestoneColor(_ id: UUID, _ color: String?) {
+        editTasks([id], "Change Color") { $0.color = color }
+    }
+
     func addBoardColumn(to projectId: UUID) {
         perform {
             try store.db.write { db in
@@ -785,8 +790,8 @@ final class AppModel {
 
     /// Creates a task from parsed quick-add text.
     func createTask(from parsed: QuickAddParser.Result, defaultScope: UUID?,
-                    milestoneId: UUID? = nil, startDate: LocalDate? = nil) {
-        undoableCreating("New Task") {
+                    milestoneId: UUID? = nil, startDate: LocalDate? = nil, asMilestone: Bool = false) {
+        undoableCreating(asMilestone ? "New Milestone" : "New Task") {
             let destination: UUID?
             if let explicit = parsed.containerId {
                 destination = explicit
@@ -803,10 +808,15 @@ final class AppModel {
                 title: parsed.title, containerId: destination, categoryId: categoryId,
                 priority: parsed.priority, dueDate: parsed.dueDate, dueTime: parsed.dueTime
             )
-            if milestoneId != nil || startDate != nil {
+            let makeMilestone = asMilestone && container(destination)?.kind == .project
+            if milestoneId != nil || startDate != nil || makeMilestone {
                 try store.editTask(task.id) { t in
-                    // Only keep the milestone if the task landed in the same project.
-                    if let milestoneId, destination == defaultScope { t.milestoneId = milestoneId }
+                    if makeMilestone {
+                        t.isMilestone = true
+                    } else if let milestoneId, destination == defaultScope {
+                        // Only keep the milestone if the task landed in the same project.
+                        t.milestoneId = milestoneId
+                    }
                     if let startDate { t.startDate = startDate }
                 }
             }

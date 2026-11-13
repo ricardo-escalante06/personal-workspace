@@ -85,6 +85,51 @@ struct TaskInspector: View {
                 }
             }
 
+            if task.isMilestone {
+                Section {
+                    MilestoneSwatches(milestone: task)
+                } header: {
+                    Text("Milestone color")
+                } footer: {
+                    Text("Its tasks use this color on the timeline.")
+                        .font(.caption).foregroundStyle(WSColor.textTertiary)
+                }
+            }
+
+            Section(task.isOccurrence ? "This occurrence" : "Dates") {
+                if !task.isOccurrence {
+                Toggle("Start date", isOn: Binding(
+                    get: { task.startDate != nil },
+                    set: { on in model.editTask(task.id) { $0.startDate = on ? (task.dueDate.map { min($0, LocalDate(Date())) } ?? LocalDate(Date())) : nil } }
+                ))
+                if let start = task.startDate {
+                    DateField("Starts", date: start) { d in model.editTask(task.id) { $0.startDate = d } }
+                }
+                }
+                if !task.isRecurring {
+                Toggle("Due date", isOn: Binding(
+                    get: { task.dueDate != nil },
+                    set: { on in model.editTask(task.id) { $0.dueDate = on ? LocalDate(Date()) : nil } }
+                ))
+                }
+                if let due = task.dueDate {
+                    DateField("Due", date: due) { d in model.editTask(task.id) { $0.dueDate = d } }
+                    Toggle("Specific time", isOn: Binding(
+                        get: { task.dueTime != nil },
+                        set: { on in changeTime(task, on ? LocalTime(hour: 23, minute: 59) : nil) }
+                    ))
+                    if let time = task.dueTime {
+                        DatePicker("Time", selection: Binding(
+                            get: { due.at(time) },
+                            set: { d in
+                                let c = Calendar.current.dateComponents([.hour, .minute], from: d)
+                                changeTime(task, LocalTime(hour: c.hour ?? 0, minute: c.minute ?? 0))
+                            }
+                        ), displayedComponents: .hourAndMinute)
+                    }
+                }
+            }
+
             Section {
                 Picker("Status", selection: binding(\.status)) {
                     Text("Not started").tag(TaskStatus.notStarted)
@@ -147,46 +192,6 @@ struct TaskInspector: View {
             }
 
             RepeatSection(task: task, series: series, editing: $editingRepeat)
-
-            Section(task.isOccurrence ? "This occurrence" : "Dates") {
-                if !task.isOccurrence {
-                Toggle("Start date", isOn: Binding(
-                    get: { task.startDate != nil },
-                    set: { on in model.editTask(task.id) { $0.startDate = on ? (task.dueDate.map { min($0, LocalDate(Date())) } ?? LocalDate(Date())) : nil } }
-                ))
-                if let start = task.startDate {
-                    DatePicker("Starts", selection: Binding(
-                        get: { start.startOfDay(in: .current) },
-                        set: { d in model.editTask(task.id) { $0.startDate = LocalDate(d) } }
-                    ), displayedComponents: .date)
-                }
-                }
-                if !task.isRecurring {
-                Toggle("Due date", isOn: Binding(
-                    get: { task.dueDate != nil },
-                    set: { on in model.editTask(task.id) { $0.dueDate = on ? LocalDate(Date()) : nil } }
-                ))
-                }
-                if let due = task.dueDate {
-                    DatePicker("Date", selection: Binding(
-                        get: { due.startOfDay(in: .current) },
-                        set: { d in model.editTask(task.id) { $0.dueDate = LocalDate(d) } }
-                    ), displayedComponents: .date)
-                    Toggle("Specific time", isOn: Binding(
-                        get: { task.dueTime != nil },
-                        set: { on in changeTime(task, on ? LocalTime(hour: 23, minute: 59) : nil) }
-                    ))
-                    if let time = task.dueTime {
-                        DatePicker("Time", selection: Binding(
-                            get: { due.at(time) },
-                            set: { d in
-                                let c = Calendar.current.dateComponents([.hour, .minute], from: d)
-                                changeTime(task, LocalTime(hour: c.hour ?? 0, minute: c.minute ?? 0))
-                            }
-                        ), displayedComponents: .hourAndMinute)
-                    }
-                }
-            }
 
             Section {
                 ForEach(blocks) { block in
@@ -317,13 +322,23 @@ private struct BlockEditor: View {
 
     var body: some View {
         HStack {
+            // Day as plain text with a popover calendar; times stay steppers.
+            DateField("", date: LocalDate(block.startsAt)) { day in
+                let cal = Calendar.current
+                let length = block.endsAt.timeIntervalSince(block.startsAt)
+                let t = cal.dateComponents([.hour, .minute], from: block.startsAt)
+                let start = cal.date(bySettingHour: t.hour ?? 0, minute: t.minute ?? 0, second: 0,
+                                     of: day.startOfDay(in: .current)) ?? block.startsAt
+                model.updateBlock(block.id, start: start, end: start.addingTimeInterval(length), coalesce: true)
+            }
+            .fixedSize()
             DatePicker("", selection: Binding(
                 get: { block.startsAt },
                 set: { start in
                     let length = block.endsAt.timeIntervalSince(block.startsAt)
                     model.updateBlock(block.id, start: start, end: start.addingTimeInterval(length), coalesce: true)
                 }
-            ))
+            ), displayedComponents: .hourAndMinute)
             .labelsHidden()
             Text("–").foregroundStyle(WSColor.textTertiary)
             DatePicker("", selection: Binding(
@@ -336,5 +351,82 @@ private struct BlockEditor: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(WSColor.textTertiary)
         }
+    }
+}
+
+/// A date shown as plain text ("Sat, Nov 14"); clicking it opens a calendar in a
+/// popover, which macOS keeps on screen (the stock field's calendar got cut off at
+/// the window edge).
+struct DateField: View {
+    let label: String
+    let date: LocalDate
+    let set: (LocalDate) -> Void
+    @State private var open = false
+
+    init(_ label: String, date: LocalDate, set: @escaping (LocalDate) -> Void) {
+        self.label = label
+        self.date = date
+        self.set = set
+    }
+
+    var body: some View {
+        if label.isEmpty { button } else { LabeledContent(label) { button } }
+    }
+
+    private var button: some View {
+        Group {
+            Button { open.toggle() } label: {
+                Text(date.startOfDay(in: .current).formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))
+                    .foregroundStyle(WSColor.textPrimary)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(open ? WSColor.hairline : .clear))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $open, arrowEdge: .leading) {
+                DatePicker("", selection: Binding(
+                    get: { date.startOfDay(in: .current) },
+                    set: { d in set(LocalDate(d)); open = false }
+                ), displayedComponents: .date)
+                .datePickerStyle(.graphical)
+                .labelsHidden()
+                .padding(WSSpace.s)
+                .frame(width: 240)
+                .presentationCompactAdaptation(.popover)
+            }
+        }
+    }
+}
+
+/// Every color as a dot; the first one ("project") clears the milestone's own color.
+struct MilestoneSwatches: View {
+    @Environment(AppModel.self) private var model
+    let milestone: TaskItem
+
+    var body: some View {
+        let project = ContainerColor(named: model.container(milestone.containerId)?.color ?? "grey")
+        HStack(spacing: 7) {
+            dot(project, selected: milestone.color == nil, help: "Project color") {
+                model.setMilestoneColor(milestone.id, nil)
+            }
+            Rectangle().fill(WSColor.hairline).frame(width: 1, height: 14)
+            ForEach(ContainerColor.allCases) { c in
+                dot(c, selected: milestone.color == c.rawValue, help: c.displayName) {
+                    model.setMilestoneColor(milestone.id, c.rawValue)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func dot(_ c: ContainerColor, selected: Bool, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Circle().fill(c.accent)
+                .frame(width: 16, height: 16)
+                .overlay(Circle().strokeBorder(WSColor.textPrimary, lineWidth: selected ? 2 : 0).padding(-3))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 }

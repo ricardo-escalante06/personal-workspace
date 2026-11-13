@@ -53,6 +53,9 @@ public struct TaskItem: SyncRecord, Hashable {
     /// A project milestone (phase). Other tasks join it through `milestoneId`.
     public var isMilestone: Bool
     public var milestoneId: UUID?
+    /// A milestone's own color (a ContainerColor name); its tasks use it on the
+    /// timeline. Nil means the project's color.
+    public var color: String?
     /// Position in its assignment series (`generatedByRuleId`), 0-based.
     public var seriesIndex: Int?
     public var createdAt: Date
@@ -88,6 +91,7 @@ public struct TaskItem: SyncRecord, Hashable {
         startDate: LocalDate? = nil,
         isMilestone: Bool = false,
         milestoneId: UUID? = nil,
+        color: String? = nil,
         seriesIndex: Int? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
@@ -121,6 +125,7 @@ public struct TaskItem: SyncRecord, Hashable {
         self.startDate = startDate
         self.isMilestone = isMilestone
         self.milestoneId = milestoneId
+        self.color = color
         self.seriesIndex = seriesIndex
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -173,6 +178,7 @@ public struct TaskItem: SyncRecord, Hashable {
         case startDate = "start_date"
         case isMilestone = "is_milestone"
         case milestoneId = "milestone_id"
+        case color
         case seriesIndex = "series_index"
         case createdAt = "created_at"
         case updatedAt = "updated_at"

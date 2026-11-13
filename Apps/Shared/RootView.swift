@@ -5,6 +5,7 @@ import WorkspaceUI
 
 /// Main window: sidebar tree · scoped dashboard · task inspector.
 struct RootView: View {
+    static let inspectorWidth: CGFloat = 360
     @Environment(AppModel.self) private var model
     @Environment(\.undoManager) private var undoManager
 
@@ -36,7 +37,12 @@ struct RootView: View {
                                                    description: Text("Click any task to see its details."))
                         }
                     }
-                    .inspectorColumnWidth(min: 300, ideal: 340, max: 460)
+                    // One fixed width for every task and event, so switching never resizes
+                    // the panel (or the window). Content wraps to fit instead of pushing out.
+                    .frame(width: Self.inspectorWidth)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .clipped()
+                    .inspectorColumnWidth(Self.inspectorWidth)
                 }
         }
         .toolbar {
@@ -437,6 +443,19 @@ struct EyeToggle: View {
 /// an eye, a color dot and a "…" menu.
 private struct CalendarListSection: View {
     @Environment(AppModel.self) private var model
+    /// Accounts start folded up; the ones you open stay open (newline-separated).
+    @AppStorage("expandedCalendarAccounts") private var expandedRaw = ""
+
+    private func expanded(_ account: String) -> Binding<Bool> {
+        Binding(
+            get: { expandedRaw.split(separator: "\n").contains { $0 == account } },
+            set: { open in
+                var set = Set(expandedRaw.split(separator: "\n").map(String.init))
+                if open { set.insert(account) } else { set.remove(account) }
+                expandedRaw = set.sorted().joined(separator: "\n")
+            }
+        )
+    }
 
     var body: some View {
         let source = model.calendarSource
@@ -447,7 +466,7 @@ private struct CalendarListSection: View {
             return ia != ib ? ia < ib : a.key < b.key
         }
         ForEach(groups, id: \.key) { account, calendars in
-            Section {
+            Section(isExpanded: expanded(account)) {
                 ForEach(calendars) { cal in
                     CalendarRow(calendar: cal, accountHidden: source.hiddenAccounts.contains(account))
                 }

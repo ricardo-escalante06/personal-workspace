@@ -46,6 +46,16 @@ struct ProjectViews: View {
 
     private var workTasks: [TaskItem] { tasks.filter { !$0.isMilestone } }
 
+    /// A milestone's own color, else the project's. Tasks take their milestone's.
+    private var tint: (TaskItem) -> ContainerColor {
+        let project = color
+        let byId = Dictionary(milestones.map { ($0.id, $0.color) }, uniquingKeysWith: { a, _ in a })
+        return { t in
+            let name = t.isMilestone ? t.color : t.milestoneId.flatMap { byId[$0] ?? nil }
+            return name.map { ContainerColor(named: $0) } ?? project
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: WSSpace.m) {
             HStack(spacing: WSSpace.m) {
@@ -63,9 +73,9 @@ struct ProjectViews: View {
             }
             switch mode {
             case .milestones:
-                MilestonesView(projectId: projectId, milestones: milestones, tasks: workTasks, color: color)
+                MilestonesView(projectId: projectId, milestones: milestones, tasks: workTasks, color: color, tint: tint)
             case .timeline:
-                ProjectTimelineView(projectId: projectId, milestones: milestones, tasks: workTasks, color: color)
+                ProjectTimelineView(projectId: projectId, milestones: milestones, tasks: workTasks, color: color, tint: tint)
             case .board:
                 ProjectBoardView(projectId: projectId, columns: columns, tasks: workTasks, milestones: milestones)
             }
@@ -91,13 +101,14 @@ private struct ProjectTaskRow: View {
     let task: TaskItem
     var showMilestone: String? = nil
     var order: [UUID] = []
+    var tint: ContainerColor? = nil
 
     var body: some View {
         let today = LocalDate(Date())
         TaskRowView(
             task: task,
             context: .init(
-                color: ContainerColor(named: model.color(for: task)),
+                color: tint ?? ContainerColor(named: model.color(for: task)),
                 subtitle: showMilestone,
                 tag: model.tagStyle(task.categoryId),
                 isStarred: model.isStarred(task),
@@ -136,6 +147,7 @@ private struct MilestonesView: View {
     let milestones: [TaskItem]
     let tasks: [TaskItem]
     let color: ContainerColor
+    let tint: (TaskItem) -> ContainerColor
 
     @State private var newMilestone = ""
     @State private var dropTarget: UUID??
@@ -180,13 +192,14 @@ private struct MilestonesView: View {
                 }
             }
         let key: UUID?? = .some(milestone?.id)
+        let mColor = milestone.map(tint) ?? color
         if milestone != nil || !tasks.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: WSSpace.s) {
                     if let milestone {
                         Button { model.toggleDone(milestone) } label: {
                             Image(systemName: milestone.status == .done ? "diamond.fill" : "diamond")
-                                .foregroundStyle(color.accent)
+                                .foregroundStyle(mColor.accent)
                         }
                         .buttonStyle(.plain)
                         .help(milestone.status == .done ? "Mark milestone not done" : "Mark milestone done")
@@ -205,7 +218,7 @@ private struct MilestonesView: View {
                     Spacer()
                     if !tasks.isEmpty {
                         Text("\(done)/\(tasks.count)").font(WSFont.metric).foregroundStyle(WSColor.textTertiary)
-                        ProgressBar(value: Double(done) / Double(tasks.count), color: color).frame(width: 70, height: 4)
+                        ProgressBar(value: Double(done) / Double(tasks.count), color: mColor).frame(width: 70, height: 4)
                     }
                     Button {
                         model.quickAdd = QuickAddRequest(presetContainer: projectId, presetMilestone: milestone?.id)
@@ -215,18 +228,23 @@ private struct MilestonesView: View {
                         .help(milestone.map { "Add a task to \($0.title)" } ?? "Add a task")
                 }
                 .padding(.horizontal, WSSpace.s)
-                .padding(.bottom, 2)
+                .padding(.vertical, 4)
+                // Selected like any task row.
+                .background(RoundedRectangle(cornerRadius: WSRadius.block)
+                    .fill(milestone.map { model.isSelected($0.id) } == true ? WSColor.hairline : .clear))
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) { if let milestone { model.openDetails(milestone.id) } }
                 .simultaneousGesture(TapGesture().onEnded { if let milestone { model.click(milestone.id, in: []) } })
                 .contextMenu {
                     if let milestone {
                         Button("Open Details") { model.openDetails(milestone.id) }
+                        MilestoneColorMenu(milestone: milestone)
+                        Divider()
                         Button("Delete Milestone", role: .destructive) { model.deleteTask(milestone.id) }
                     }
                 }
 
-                ForEach(visible) { t in ProjectTaskRow(task: t, order: visible.map(\.id)) }
+                ForEach(visible) { t in ProjectTaskRow(task: t, order: visible.map(\.id), tint: mColor) }
                 if visible.isEmpty {
                     Text(tasks.isEmpty ? "Drag tasks here, or press + to add one." : "All done.")
                         .font(.system(size: 12))
@@ -260,6 +278,7 @@ private struct ProjectTimelineView: View {
     let milestones: [TaskItem]
     let tasks: [TaskItem]
     let color: ContainerColor
+    let tint: (TaskItem) -> ContainerColor
 
     @State private var collapsed: Set<UUID> = []
     /// The drag in progress (shared so a whole selection moves together).
@@ -340,7 +359,7 @@ private struct ProjectTimelineView: View {
                                     let order = rows.map(\.id)
                                     ForEach(rows) { row in
                                         TimelineBar(row: barModel(row), first: first, dayWidth: Self.dayWidth,
-                                                    color: ContainerColor(named: model.color(for: row.task)),
+                                                    color: tint(row.task),
                                                     isSelected: model.isSelected(row.task.id),
                                                     drag: $drag,
                                                     order: order,
@@ -427,7 +446,7 @@ private struct ProjectTimelineView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(WSColor.textTertiary)
-                Image(systemName: "diamond.fill").font(.system(size: 9)).foregroundStyle(color.accent)
+                Image(systemName: "diamond.fill").font(.system(size: 9)).foregroundStyle(tint(row.task).accent)
             } else {
                 Color.clear.frame(width: row.task.milestoneId == nil ? 0 : 17)
             }
@@ -439,10 +458,17 @@ private struct ProjectTimelineView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, WSSpace.s)
+        .frame(maxHeight: .infinity)
+        .background(RoundedRectangle(cornerRadius: 5)
+            .fill(model.isSelected(row.task.id) ? WSColor.hairline : .clear)
+            .padding(.vertical, 2).padding(.leading, 4))
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { model.openDetails(row.task.id) }
         .simultaneousGesture(TapGesture().onEnded { model.click(row.task.id, in: rows.map(\.id)) })
-        .contextMenu { TaskContextMenu(task: row.task) }
+        .contextMenu {
+            if row.kind == .milestone { MilestoneColorMenu(milestone: row.task) }
+            TaskContextMenu(task: row.task)
+        }
     }
 
     private func header(first: LocalDate, dayCount: Int) -> some View {
@@ -609,7 +635,7 @@ private struct TimelineBar: View {
             .contentShape(Rectangle())
             .modifier(BarTaps(model: model, id: row.task.id, order: order))
             .gesture(moveGesture)
-            .contextMenu { TaskContextMenu(task: row.task) }
+            .contextMenu { barMenu }
             .help("\(row.task.title) · due \(row.end.map { WSFormat.relativeDay($0, today: LocalDate(Date())) } ?? "")")
     }
 
@@ -642,8 +668,13 @@ private struct TimelineBar: View {
         .contentShape(Rectangle())
         .modifier(BarTaps(model: model, id: row.task.id, order: order))
         .gesture(moveGesture)
-        .contextMenu { TaskContextMenu(task: row.task) }
+        .contextMenu { barMenu }
         .help(row.isDerived ? "\(row.task.title) · spans its tasks; dragging it moves them all" : row.task.title)
+    }
+
+    @ViewBuilder private var barMenu: some View {
+        if row.isMilestone { MilestoneColorMenu(milestone: row.task) }
+        TaskContextMenu(task: row.task)
     }
 
     private func edgeHandle(_ part: TimelineDrag.Part) -> some View {
@@ -894,5 +925,29 @@ private struct BoardCard: View {
             .strokeBorder(model.isSelected(task.id) ? WSColor.textPrimary.opacity(0.7) : WSColor.hairline))
         .contentShape(Rectangle())
         .taskInteractions(task, order: order)
+    }
+}
+
+/// Color submenu for a milestone ("Project color" resets it).
+struct MilestoneColorMenu: View {
+    @Environment(AppModel.self) private var model
+    let milestone: TaskItem
+
+    var body: some View {
+        Menu("Color") {
+            Button {
+                model.setMilestoneColor(milestone.id, nil)
+            } label: {
+                Label { Text("Project color") } icon: {
+                    ColorSwatchImage.image(for: ContainerColor(named: model.container(milestone.containerId)?.color ?? "grey"))
+                }
+            }
+            Divider()
+            ForEach(ContainerColor.allCases) { c in
+                Button { model.setMilestoneColor(milestone.id, c.rawValue) } label: {
+                    Label { Text(c.displayName + (milestone.color == c.rawValue ? "  ✓" : "")) } icon: { ColorSwatchImage.image(for: c) }
+                }
+            }
+        }
     }
 }
