@@ -58,14 +58,17 @@ public enum CalendarQuery {
             ))
         }
 
-        // Spans: start date → the day before it's due (the due day has its flag).
+        // Spans: start date through the due day. A spanned task's date-only deadline
+        // is the end of its bar, so it doesn't get a separate flag chip too.
+        var spanned = Set<UUID>()
         if options.showSpans {
             let first = LocalDate(start, in: timeZone), last = LocalDate(end.addingTimeInterval(-1), in: timeZone)
             for t in tasks where !t.status.isClosed {
-                guard let s = t.startDate, let due = t.dueDate, s < due, s <= last, due > first else { continue }
+                guard let s = t.startDate, let due = t.dueDate, s < due, s <= last, due >= first else { continue }
+                spanned.insert(t.id)
                 items.append(CalendarItem(
                     source: .span(taskId: t.id), title: t.title,
-                    start: s.startOfDay(in: timeZone), end: due.startOfDay(in: timeZone),
+                    start: s.startOfDay(in: timeZone), end: due.adding(days: 1).startOfDay(in: timeZone),
                     isAllDay: true, containerId: t.containerId, isDone: false,
                     isTentative: false, isEditable: true, dueTime: nil, categoryId: t.categoryId
                 ))
@@ -85,7 +88,7 @@ public enum CalendarQuery {
                         isAllDay: false, containerId: t.containerId, isDone: t.status == .done,
                         isTentative: false, isEditable: true, dueTime: t.dueTime, categoryId: t.categoryId
                     ))
-                } else {
+                } else if !spanned.contains(t.id) {
                     items.append(CalendarItem(
                         source: .deadline(taskId: t.id), title: t.title,
                         start: due.startOfDay(in: timeZone), end: due.adding(days: 1).startOfDay(in: timeZone),

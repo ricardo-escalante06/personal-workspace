@@ -149,7 +149,7 @@ private func event(_ title: String, calendar: String = "Google", start: Date = b
 }
 
 @Suite struct TaskSpanTests {
-    @Test func spansRunFromStartUpToTheDueDay() throws {
+    @Test func spansRunFromStartThroughTheDueDay() throws {
         let store = try WorkspaceStore.inMemory()
         let tz = TimeZone(identifier: "America/Los_Angeles")!
         let monday = LocalDate(year: 2026, month: 11, day: 9)
@@ -166,9 +166,11 @@ private func event(_ title: String, calendar: String = "Google", start: Date = b
         let span = try #require(on.first { $0.isSpan })
         #expect(span.isAllDay)
         #expect(span.start == monday.adding(days: 1).startOfDay(in: tz))
-        // Ends where the due day begins: the due day shows the deadline flag instead.
-        #expect(span.end == monday.adding(days: 4).startOfDay(in: tz))
-        #expect(on.contains { if case .deadline = $0.source { return true } else { return false } })
+        // Runs through the due day, which replaces the separate deadline chip.
+        #expect(span.end == monday.adding(days: 5).startOfDay(in: tz))
+        #expect(!on.contains { if case .deadline = $0.source { return true } else { return false } })
+        // With spans off, the deadline flag is back.
+        #expect(off.contains { if case .deadline = $0.source { return true } else { return false } })
 
         // Done tasks don't keep a span.
         try store.setStatus(task.id, .done)

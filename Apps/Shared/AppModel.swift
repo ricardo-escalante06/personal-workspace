@@ -125,6 +125,14 @@ final class AppModel {
     enum WindowKind { case main, calendar }
     var activeWindow: WindowKind = .main
     var showMainInspector = false
+    /// Main window's left sidebar (⌘I).
+    var sidebarVisibility: NavigationSplitViewVisibility = .all
+
+    func toggleSidebar() {
+        withAnimation(.smooth(duration: 0.32)) {
+            sidebarVisibility = sidebarVisibility == .detailOnly ? .all : .detailOnly
+        }
+    }
     var showCalendarInspector = false
     /// The details panel of the window you're in.
     var showInspector: Bool {
@@ -717,7 +725,7 @@ final class AppModel {
 
     func clearSelection() { select(nil) }
 
-    /// Double-click, ⌘I, palette: select and show the details panel.
+    /// Double-click, ⌘O, palette: select and show the details panel.
     func openDetails(_ taskId: UUID) {
         selectedTaskId = taskId
         setInspector(visible: true)

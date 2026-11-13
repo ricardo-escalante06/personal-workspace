@@ -37,8 +37,11 @@ struct WorkspaceApp: App {
                     .keyboardShortcut("r", modifiers: [.command, .shift])
             }
             CommandGroup(after: .sidebar) {
-                Button(model.showInspector ? "Hide Details" : "Show Details") { model.toggleInspector() }
+                Button(model.sidebarVisibility == .detailOnly ? "Show Sidebar" : "Hide Sidebar") { model.toggleSidebar() }
                     .keyboardShortcut("i")
+                    .disabled(model.activeWindow != .main)
+                Button(model.showInspector ? "Hide Details" : "Show Details") { model.toggleInspector() }
+                    .keyboardShortcut("o")
                 Divider()
                 Button("Previous") { model.shiftWeek(-1) }
                     .keyboardShortcut("[")

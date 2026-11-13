@@ -485,6 +485,7 @@ private struct ProjectTimelineView: View {
                         .foregroundStyle(d == today ? Color.white : (Self.isWeekend(d) ? WSColor.textTertiary : WSColor.textSecondary))
                         .frame(width: 18, height: 16)
                         .background(Circle().fill(d == today ? WSColor.now : .clear))
+                        .frame(width: Self.dayWidth)   // centered over its column, like the bars and today line
                 }
                 .frame(width: Self.dayWidth, height: 34, alignment: .leading)
                 .id("day-\(i)")

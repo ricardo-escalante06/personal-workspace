@@ -11,7 +11,7 @@ struct RootView: View {
 
     var body: some View {
         @Bindable var model = model
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $model.sidebarVisibility) {
             Sidebar()
                 .navigationSplitViewColumnWidth(min: 220, ideal: 250)
         } detail: {
@@ -42,7 +42,7 @@ struct RootView: View {
                 Button { model.toggleInspector() } label: {
                     Label("Details", systemImage: "sidebar.right")
                 }
-                .help("Show details (⌘I)")
+                .help("Show details (⌘O)")
             }
         }
         .modifier(WindowChrome(kind: .main))
@@ -180,7 +180,7 @@ struct CalendarWindow: View {
                     Button { model.showCalendarInspector.toggle() } label: {
                         Label("Details", systemImage: "sidebar.right")
                     }
-                    .help("Show details (⌘I)")
+                    .help("Show details (⌘O)")
                 }
             }
             .navigationTitle("Calendar")

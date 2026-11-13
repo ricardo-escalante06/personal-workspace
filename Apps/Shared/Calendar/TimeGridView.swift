@@ -286,6 +286,11 @@ struct TimeGridView: View {
         return HStack(spacing: 4) {
             if showsTitle { Text(item.title).lineLimit(1) }
             Spacer(minLength: 0)
+            if isEnd {
+                // The bar's last day is the due day.
+                Image(systemName: "flag.fill").font(.system(size: 8))
+                    .foregroundStyle(style.accent)
+            }
         }
         .font(.system(size: 11, weight: .medium))
         .foregroundStyle(WSColor.textPrimary)
@@ -308,7 +313,7 @@ struct TimeGridView: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { onOpen(item) }
         .simultaneousGesture(TapGesture().onEnded { onClick(item, Self.additiveClick) })
-        .help("\(item.title): working on it until it's due. Drag onto a time to plan a work block.")
+        .help("\(item.title): working on it through the day it's due. Drag onto a time to plan a work block.")
         .draggable(item.taskId.map { "due-\($0.uuidString)" } ?? item.id)
     }
 
