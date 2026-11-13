@@ -416,9 +416,9 @@ final class CalendarSource {
         return removed
     }
 
-    func respond(_ event: ExternalEvent, _ response: EventAttendee.Response) async throws {
+    func respond(_ event: ExternalEvent, _ response: EventAttendee.Response, note: String? = nil) async throws {
         guard event.provider == .google, let google else { throw WriteError.readOnly }
-        try await google.respond(event, response)
+        try await google.respond(event, response, note: note)
     }
 
     /// Where a newly created event lives, so it can be removed again (⌘Z after a paste).

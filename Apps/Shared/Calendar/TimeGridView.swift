@@ -16,7 +16,11 @@ struct TimeGridView: View {
     @Environment(AppModel.self) private var model
     @AppStorage("allDayExpanded") private var allDayExpanded = false
 
+    /// Every day drawn, including `lead` days hidden off the left edge (and any past
+    /// `visibleCount` off the right) that slide in while scrolling sideways.
     let days: [LocalDate]
+    var lead: Int = 0
+    var visibleCount: Int? = nil
     let items: [CalendarItem]
     let placed: [LocalDate: [PlacedItem]]
     @Binding var selection: Set<String>
@@ -46,8 +50,17 @@ struct TimeGridView: View {
     static let holdToCreate: TimeInterval = 0.35
     @State private var dropTargetDay: Int?
     @State private var now = Date()
-    @State private var scrollAccumulator: CGFloat = 0
     @State private var isHovering = false
+    /// Width of the day area (everything right of the hour labels).
+    @State private var areaWidth: CGFloat = 0
+    /// How far the days have slid sideways under the fingers, in points.
+    @State private var slide: CGFloat = 0
+    @State private var settleTask: Task<Void, Never>?
+
+    private var shownCount: Int { visibleCount ?? days.count }
+    private var columnWidth: CGFloat { areaWidth / CGFloat(max(shownCount, 1)) }
+    /// Offset that hides the leading buffer days, plus the live slide.
+    private var slideOffset: CGFloat { -CGFloat(lead) * columnWidth + slide }
 
     private struct DragPreview: Equatable {
         var itemId: String
@@ -77,14 +90,23 @@ struct TimeGridView: View {
                     HStack(alignment: .top, spacing: 0) {
                         hourGutter
                         GeometryReader { geo in
-                            grid(width: geo.size.width)
+                            let colW = geo.size.width / CGFloat(max(shownCount, 1))
+                            grid(width: colW * CGFloat(days.count))
+                                .offset(x: -CGFloat(lead) * colW + slide)
                         }
+                        .clipped()
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { areaWidth = $0 }
                     }
                     .frame(height: Self.hourHeight * 24)
                 }
                 // Open with the current time in the middle of the screen.
                 .onAppear { scrollToNow(proxy) }
-                .onChange(of: days) { _, new in if new.contains(today) { scrollToNow(proxy) } }
+                // Jumping to today recenters on now; sliding a day at a time doesn't.
+                .onChange(of: days) { old, new in
+                    if new.contains(today), !old.contains(today), abs((old.first ?? today).daysUntil(new.first ?? today)) > 1 {
+                        scrollToNow(proxy)
+                    }
+                }
             }
             .onHover { isHovering = $0 }
             #if os(macOS)
@@ -99,15 +121,51 @@ struct TimeGridView: View {
         }
     }
 
-    /// Accumulates horizontal scroll; every column-ish of travel moves one day.
+    /// Sideways scroll: the days follow the fingers (the next day is already drawn
+    /// just off screen), a full column of travel moves on one day, and when the
+    /// fingers stop the grid settles onto the nearest day.
     private func handleSideways(_ dx: CGFloat) {
-        scrollAccumulator += dx
-        let threshold: CGFloat = 70
-        while abs(scrollAccumulator) >= threshold {
-            // Natural scrolling: swiping left (negative dx) moves forward in time.
-            onScrollDays(scrollAccumulator < 0 ? 1 : -1)
-            scrollAccumulator += scrollAccumulator < 0 ? threshold : -threshold
+        let w = columnWidth
+        guard w > 0, lead > 0 else { return }
+        settleTask?.cancel()
+        // Natural scrolling: swiping left (negative dx) moves forward in time.
+        slide += dx
+        while slide <= -w { onScrollDays(1); slide += w }
+        while slide >= w { onScrollDays(-1); slide -= w }
+        settleTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            settle()
         }
+    }
+
+    private func settle() {
+        let w = columnWidth
+        guard w > 0, slide != 0 else { return }
+        let direction = slide <= -w / 2 ? 1 : (slide >= w / 2 ? -1 : 0)
+        guard direction != 0 else {
+            withAnimation(.smooth(duration: 0.2)) { slide = 0 }
+            return
+        }
+        withAnimation(.smooth(duration: 0.18)) {
+            slide = direction == 1 ? -w : w
+        } completion: {
+            // Swap in the next day and drop the offset in one update: no visible jump.
+            var t = Transaction()
+            t.disablesAnimations = true
+            withTransaction(t) {
+                onScrollDays(direction)
+                slide = 0
+            }
+        }
+    }
+
+    /// Day columns that line up with the grid and slide with it (header, all-day row).
+    private func slidingColumns<Content: View>(@ViewBuilder _ content: @escaping (LocalDate) -> Content) -> some View {
+        SlidingColumnsLayout(visible: shownCount, lead: lead, slide: slide) {
+            ForEach(days, id: \.self) { day in content(day) }
+        }
+        .clipped()
     }
 
     // MARK: Header + all-day
@@ -118,7 +176,7 @@ struct TimeGridView: View {
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(WSColor.textTertiary)
                 .frame(width: Self.gutter)
-            ForEach(days, id: \.self) { day in
+            slidingColumns { day in
                 let isToday = day == today
                 HStack(spacing: 5) {
                     Text(WSFormat.weekdayShort(day))
@@ -138,6 +196,7 @@ struct TimeGridView: View {
                     model.calendarMode = .day
                 }
             }
+            Spacer(minLength: 0)
         }
         .padding(.vertical, WSSpace.s)
     }
@@ -145,23 +204,35 @@ struct TimeGridView: View {
     private var allDayRow: some View {
         let allDay = items.filter(\.isAllDay)
         let maxShown = allDayExpanded ? Int.max : 3
+        let lanes = Self.spanLanes(allDay.filter(\.isSpan))
         return HStack(alignment: .top, spacing: 0) {
             Text("All-day")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(WSColor.textTertiary)
-                .frame(width: Self.gutter, alignment: .trailing)
+                .frame(width: Self.gutter - 6, alignment: .trailing)
                 .padding(.trailing, 6)
                 .padding(.top, 6)
-            ForEach(days, id: \.self) { day in
+            slidingColumns { day in
                 let dayStart = day.startOfDay(in: tz), dayEnd = day.adding(days: 1).startOfDay(in: tz)
-                let chips = allDay.filter { $0.start < dayEnd && $0.end > dayStart }
+                let here = allDay.filter { $0.start < dayEnd && $0.end > dayStart }
+                // Spans keep their own row (lane) on every day, so each reads as one bar;
+                // an empty lane above is left blank. Other chips follow.
+                let spansHere = here.filter(\.isSpan)
+                let laneCount = (spansHere.compactMap { lanes[$0.id] }.max() ?? -1) + 1
+                let slots: [CalendarItem?] = (0..<laneCount).map { lane in spansHere.first { lanes[$0.id] == lane } }
+                    + here.filter { !$0.isSpan }.map { Optional($0) }
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(chips.prefix(maxShown)) { item in
-                        allDayChip(item)
+                    ForEach(Array(slots.prefix(maxShown).enumerated()), id: \.offset) { _, slot in
+                        if let item = slot {
+                            if item.isSpan { spanChip(item, day: day) } else { allDayChip(item) }
+                        } else {
+                            Color.clear.frame(height: 18)
+                        }
                     }
-                    if chips.count > maxShown {
-                        allDayToggle("+\(chips.count - maxShown) more")
-                    } else if allDayExpanded && chips.count > 3 {
+                    let hidden = slots.dropFirst(min(maxShown, slots.count)).compactMap { $0 }.count
+                    if hidden > 0 {
+                        allDayToggle("+\(hidden) more")
+                    } else if allDayExpanded && slots.count > 3 {
                         allDayToggle("Show less")
                     }
                 }
@@ -170,6 +241,22 @@ struct TimeGridView: View {
                 .overlay(alignment: .leading) { Rectangle().fill(WSColor.hairline).frame(width: 1) }
             }
         }
+    }
+
+    /// Rows for spans: each takes the first row free on all of its days.
+    static func spanLanes(_ spans: [CalendarItem]) -> [String: Int] {
+        var laneEnds: [Date] = []
+        var out: [String: Int] = [:]
+        for s in spans.sorted(by: { ($0.start, $0.id) < ($1.start, $1.id) }) {
+            if let lane = laneEnds.firstIndex(where: { $0 <= s.start }) {
+                laneEnds[lane] = s.end
+                out[s.id] = lane
+            } else {
+                laneEnds.append(s.end)
+                out[s.id] = laneEnds.count - 1
+            }
+        }
+        return out
     }
 
     /// "+N more" opens the all-day row up to show (and drag) everything; remembered.
@@ -184,6 +271,45 @@ struct TimeGridView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    /// One day's piece of a task span: pieces touch across days so it reads as one bar,
+    /// with the title on its first visible day. Drag it onto a time to plan work.
+    private func spanChip(_ item: CalendarItem, day: LocalDate) -> some View {
+        let style = styleFor(item)
+        let first = LocalDate(item.start, in: tz)
+        let last = LocalDate(item.end.addingTimeInterval(-1), in: tz)
+        let isStart = day == first, isEnd = day == last
+        let firstShown = days.indices.contains(lead) ? days[lead] : first
+        let showsTitle = isStart || day == firstShown
+        let isSelected = selection.contains(item.id)
+        return HStack(spacing: 4) {
+            if showsTitle { Text(item.title).lineLimit(1) }
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(WSColor.textPrimary)
+        .padding(.horizontal, 5).padding(.vertical, 2)
+        .frame(minHeight: 18)
+        .background(UnevenRoundedRectangle(
+            topLeadingRadius: isStart ? 4 : 0, bottomLeadingRadius: isStart ? 4 : 0,
+            bottomTrailingRadius: isEnd ? 4 : 0, topTrailingRadius: isEnd ? 4 : 0
+        ).fill(style.fill.opacity(0.75)))
+        .overlay(alignment: .leading) {
+            if isStart { RoundedRectangle(cornerRadius: 1).fill(style.accent).frame(width: 2).padding(.vertical, 3).padding(.leading, 2) }
+        }
+        .overlay(UnevenRoundedRectangle(
+            topLeadingRadius: isStart ? 4 : 0, bottomLeadingRadius: isStart ? 4 : 0,
+            bottomTrailingRadius: isEnd ? 4 : 0, topTrailingRadius: isEnd ? 4 : 0
+        ).strokeBorder(isSelected ? WSColor.textPrimary.opacity(0.8) : .clear))
+        // Reach across the gap between day columns.
+        .padding(.leading, isStart ? 0 : -3)
+        .padding(.trailing, isEnd ? 0 : -3)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { onOpen(item) }
+        .simultaneousGesture(TapGesture().onEnded { onClick(item, Self.additiveClick) })
+        .help("\(item.title): working on it until it's due. Drag onto a time to plan a work block.")
+        .draggable(item.taskId.map { "due-\($0.uuidString)" } ?? item.id)
     }
 
     private func allDayChip(_ item: CalendarItem) -> some View {
@@ -551,6 +677,30 @@ extension CalendarItem {
 }
 
 /// Static grid lines and column shading, drawn once with Canvas (cheap to redraw).
+/// Lays children out as day columns of (available width ÷ `visible`) each, shifted
+/// left by `lead` columns plus `slide`. Always exactly as wide as it's offered, so
+/// the hidden extra days never widen the window.
+private struct SlidingColumnsLayout: Layout {
+    let visible: Int
+    let lead: Int
+    let slide: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 0
+        let col = width / CGFloat(max(visible, 1))
+        let height = subviews.map { $0.sizeThatFits(ProposedViewSize(width: col, height: nil)).height }.max() ?? 0
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let col = bounds.width / CGFloat(max(visible, 1))
+        for (i, v) in subviews.enumerated() {
+            let x = bounds.minX + CGFloat(i - lead) * col + slide
+            v.place(at: CGPoint(x: x, y: bounds.minY), proposal: ProposedViewSize(width: col, height: bounds.height))
+        }
+    }
+}
+
 private struct GridBackground: View {
     let dayCount: Int
     let weekendOrToday: [Bool]
@@ -587,9 +737,12 @@ struct GridBlockView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            Rectangle()
+            // A slim rounded bar inset from the edges (Notion Calendar's look).
+            RoundedRectangle(cornerRadius: 1.5)
                 .fill(style.accent)
-                .frame(width: WSRadius.accentBar)
+                .frame(width: 3)
+                .padding(.vertical, 3)
+                .padding(.leading, 3)
                 .opacity(item.isTentative || item.isDeadline ? 0 : 1)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 3) {
@@ -597,7 +750,7 @@ struct GridBlockView: View {
                         Image(systemName: "flag.fill").font(.system(size: 9)).foregroundStyle(style.accent)
                     } else if item.event == nil {
                         // Work blocks get a small task glyph so they read differently from meetings.
-                        Image(systemName: "checklist").font(.system(size: 9)).foregroundStyle(style.accent)
+                        Image(systemName: "checklist").font(.system(size: 9)).foregroundStyle(style.accent.opacity(0.9))
                     }
                     if item.isDone {
                         Image(systemName: "checkmark").font(.system(size: 9, weight: .bold))
@@ -621,7 +774,7 @@ struct GridBlockView: View {
                     }
                 }
             }
-            .padding(.horizontal, 6)
+            .padding(.horizontal, 5)
             .padding(.vertical, compact ? 1 : 4)
             Spacer(minLength: 0)
         }

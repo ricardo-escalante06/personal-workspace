@@ -147,3 +147,32 @@ private func event(_ title: String, calendar: String = "Google", start: Date = b
         #expect(try store.tasks(inScope: nil).count == before)
     }
 }
+
+@Suite struct TaskSpanTests {
+    @Test func spansRunFromStartUpToTheDueDay() throws {
+        let store = try WorkspaceStore.inMemory()
+        let tz = TimeZone(identifier: "America/Los_Angeles")!
+        let monday = LocalDate(year: 2026, month: 11, day: 9)
+        let task = try store.addTask(title: "Write report", containerId: nil, dueDate: monday.adding(days: 4))
+        try store.editTask(task.id) { $0.startDate = monday.adding(days: 1) }
+        let from = monday.startOfDay(in: tz), to = monday.adding(days: 7).startOfDay(in: tz)
+
+        var options = CalendarQuery.Options()
+        let off = try store.db.read { try CalendarQuery.items($0, scope: nil, from: from, to: to, events: [], options: options, timeZone: tz) }
+        #expect(!off.contains { $0.isSpan })
+
+        options.showSpans = true
+        let on = try store.db.read { try CalendarQuery.items($0, scope: nil, from: from, to: to, events: [], options: options, timeZone: tz) }
+        let span = try #require(on.first { $0.isSpan })
+        #expect(span.isAllDay)
+        #expect(span.start == monday.adding(days: 1).startOfDay(in: tz))
+        // Ends where the due day begins: the due day shows the deadline flag instead.
+        #expect(span.end == monday.adding(days: 4).startOfDay(in: tz))
+        #expect(on.contains { if case .deadline = $0.source { return true } else { return false } })
+
+        // Done tasks don't keep a span.
+        try store.setStatus(task.id, .done)
+        let done = try store.db.read { try CalendarQuery.items($0, scope: nil, from: from, to: to, events: [], options: options, timeZone: tz) }
+        #expect(!done.contains { $0.isSpan })
+    }
+}

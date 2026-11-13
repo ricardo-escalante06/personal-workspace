@@ -93,8 +93,8 @@ public enum WSRadius {
 }
 
 public enum WSFont {
-    public static let blockTitle = Font.system(size: 12.5, weight: .semibold)
-    public static let blockMeta  = Font.system(size: 11.5).monospacedDigit()
+    public static let blockTitle = Font.system(size: 12, weight: .medium)
+    public static let blockMeta  = Font.system(size: 11).monospacedDigit()
     public static let body       = Font.system(size: 13)
     public static let rowTitle   = Font.system(size: 13, weight: .regular)
     public static let sectionLabel = Font.system(size: 11, weight: .semibold)

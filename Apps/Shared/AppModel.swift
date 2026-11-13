@@ -967,8 +967,9 @@ final class AppModel {
     }
 
     /// Yes / No / Maybe on a Google invitation.
-    func respond(_ event: ExternalEvent, _ response: EventAttendee.Response) {
-        runCalendar { try await $0.respond(event, response) }
+    /// `note` goes to the organizer with the reply ("" clears it, nil leaves it).
+    func respond(_ event: ExternalEvent, _ response: EventAttendee.Response, note: String? = nil) {
+        runCalendar { try await $0.respond(event, response, note: note) }
     }
 
     func createCalendar(named name: String, in account: String) {
@@ -1211,6 +1212,7 @@ final class AppModel {
         var blockIds: [UUID] = []
         var blockTaskIds: [UUID] = []
         var clearedDeadlines: [(UUID, LocalDate?, LocalTime?)] = []
+        var clearedStarts: [UUID] = []
         for item in items {
             switch item.source {
             case .block(let taskId, let blockId):
@@ -1219,6 +1221,8 @@ final class AppModel {
             case .deadline(let taskId):
                 let t = try? store.db.read { try TaskItem.fetchOne($0, id: taskId) }
                 clearedDeadlines.append((taskId, t?.dueDate, t?.dueTime))
+            case .span(let taskId):
+                clearedStarts.append(taskId)   // the span goes; the task and its due date stay
             case .event(let e):
                 // Your own events, or (for Google) invites on a calendar you can write to:
                 // deleting an invite removes it from your calendar.
@@ -1226,10 +1230,12 @@ final class AppModel {
                 if e.isWritable || (e.provider == .google && calendarWritable) { events.append(e) }
             }
         }
-        if !blockIds.isEmpty || !clearedDeadlines.isEmpty {
-            undoable(blockIds.isEmpty ? "Clear Due Date" : "Delete Work Block", blockTaskIds + clearedDeadlines.map(\.0)) {
+        if !blockIds.isEmpty || !clearedDeadlines.isEmpty || !clearedStarts.isEmpty {
+            let name = !blockIds.isEmpty ? "Delete Work Block" : (clearedDeadlines.isEmpty ? "Clear Start Date" : "Clear Due Date")
+            undoable(name, blockTaskIds + clearedDeadlines.map(\.0) + clearedStarts) {
                 for id in blockIds { try store.deleteScheduleBlock(id) }
                 for (taskId, _, _) in clearedDeadlines { try store.editTask(taskId) { $0.dueDate = nil } }
+                for taskId in clearedStarts { try store.editTask(taskId) { $0.startDate = nil } }
             }
         }
         if !events.isEmpty { deleteEvents(events) }

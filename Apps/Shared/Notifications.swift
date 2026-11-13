@@ -176,6 +176,8 @@ extension AppModel {
             case .deadline:
                 guard !item.isAllDay else { return nil }   // date-only deadlines are the Today widget's job
                 kind = .deadline
+            case .span:
+                return nil
             }
             let colorName = container(item.containerId)?.color
             return WidgetCalendarItem(id: item.id, kind: kind, title: item.title, start: item.start, end: item.end,

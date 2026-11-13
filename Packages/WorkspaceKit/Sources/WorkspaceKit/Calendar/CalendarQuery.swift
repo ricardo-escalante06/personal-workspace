@@ -6,6 +6,8 @@ import GRDB
 public enum CalendarQuery {
     public struct Options: Sendable, Equatable {
         public var showDeadlines = true
+        /// Tasks with a start date show a bar from it up to the day they're due.
+        public var showSpans = false
         public var showEvents = true
         /// Calendar ids hidden by the user (EventKit calendar identifiers).
         public var hiddenCalendars: Set<String> = []
@@ -54,6 +56,20 @@ public enum CalendarQuery {
                 start: b.startsAt, end: b.endsAt, isAllDay: false, containerId: t.containerId,
                 isDone: t.status == .done, isTentative: false, isEditable: true, dueTime: nil, categoryId: t.categoryId
             ))
+        }
+
+        // Spans: start date → the day before it's due (the due day has its flag).
+        if options.showSpans {
+            let first = LocalDate(start, in: timeZone), last = LocalDate(end.addingTimeInterval(-1), in: timeZone)
+            for t in tasks where !t.status.isClosed {
+                guard let s = t.startDate, let due = t.dueDate, s < due, s <= last, due > first else { continue }
+                items.append(CalendarItem(
+                    source: .span(taskId: t.id), title: t.title,
+                    start: s.startOfDay(in: timeZone), end: due.startOfDay(in: timeZone),
+                    isAllDay: true, containerId: t.containerId, isDone: false,
+                    isTentative: false, isEditable: true, dueTime: nil, categoryId: t.categoryId
+                ))
+            }
         }
 
         // Deadlines: date-only → all-day row; timed (e.g. "Quiz 4, 2 PM") → a marker on the

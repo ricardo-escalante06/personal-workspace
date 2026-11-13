@@ -3,6 +3,44 @@ import WorkspaceKit
 import WorkspaceUI
 
 /// "Repeat" in the task panel: quick choices, what it means, and the next few dates.
+/// The task panel's repeat line: plain text ("Every week (Sunday)") that opens a
+/// menu of presets; "Custom…" opens the full editor.
+struct RepeatRow: View {
+    @Environment(AppModel.self) private var model
+    let task: TaskItem
+    let series: TaskItem?
+    @Binding var editing: Bool
+
+    private var rule: RepeatRule? { series.flatMap(Occurrences.rule(of:)) }
+    private var anchor: LocalDate { series.flatMap(Occurrences.anchor(of:)) ?? task.dueDate ?? LocalDate(Date()) }
+
+    var body: some View {
+        PanelRow(icon: "repeat") {
+            VStack(alignment: .leading, spacing: 3) {
+                PlainMenu {
+                    ForEach(RepeatSection.Preset.allCases, id: \.self) { p in
+                        Button(p.title(anchor: anchor)) {
+                            if p == .custom { editing = true } else { model.setRepeat(task, p.rule(anchor: anchor)) }
+                        }
+                    }
+                } label: {
+                    Text(rule?.summary(anchor: anchor) ?? "Repeat")
+                        .foregroundStyle(rule == nil ? WSColor.textTertiary : WSColor.textPrimary)
+                        .lineLimit(2)
+                }
+                if let rule {
+                    let upcoming = rule.dates(anchor: anchor, from: max(anchor, LocalDate(Date())),
+                                              through: LocalDate(Date()).adding(days: 400)).prefix(3)
+                    Text("Next: " + upcoming.map { $0.startOfDay(in: .current).formatted(.dateTime.month(.abbreviated).day()) }
+                        .joined(separator: ", "))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(WSColor.textTertiary)
+                }
+            }
+        }
+    }
+}
+
 struct RepeatSection: View {
     @Environment(AppModel.self) private var model
     let task: TaskItem

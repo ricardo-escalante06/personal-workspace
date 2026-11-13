@@ -29,8 +29,9 @@ struct EventInspector: View {
     @State private var removedGuests: Set<String> = []
     @State private var addingLink = false
     @State private var linkDraft = ""
+    @State private var rsvpNote = ""
     @FocusState private var focus: Field?
-    private enum Field { case title, location, notes, link }
+    private enum Field { case title, location, notes, link, rsvpNote }
 
     private var editable: Bool { event.isWritable }
 
@@ -38,60 +39,30 @@ struct EventInspector: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 titleSection
-                divider
                 timeSection
-                if !event.attendees.isEmpty || event.organizer != nil || (editable && event.provider == .google) {
-                    divider
-                    guestsSection
-                    if editable && event.provider == .google {
-                        addGuestRow.padding(.horizontal, WSSpace.l).padding(.bottom, WSSpace.m)
-                    }
-                }
-                if editable || event.conferenceURL != nil || (event.location?.isEmpty == false) {
-                    divider
-                    whereSection
-                }
-                if editable {
-                    divider
-                    section {
-                        VStack(alignment: .trailing, spacing: 6) {
-                            TextField("Add description", text: $notesDraft, axis: .vertical)
-                                .textFieldStyle(.plain)
-                                .font(.system(size: 12.5))
-                                .lineLimit(3...12)
-                                .focused($focus, equals: .notes)
-                            if notesDraft != Self.plainText(event.notes ?? "") {
-                                Button("Save description") { save { $0.notes = notesDraft } }
-                                    .buttonStyle(.borderedProminent).controlSize(.small)
-                            }
-                        }
-                    }
-                } else if let notes = event.notes, !notes.isEmpty {
-                    divider
-                    section {
-                        Text(Self.plainText(notes))
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(WSColor.textSecondary)
-                            .textSelection(.enabled)
-                    }
-                }
                 divider
-                calendarSection
+                peopleSection
+                whereSection
                 divider
-                belongsSection
-                if event.isWritable || event.provider == .google {
-                    divider
-                    actionsSection
-                }
+                settingsSection
+                footer
             }
+            .padding(.bottom, WSSpace.m)
         }
         .background(WSColor.raised)
+        .onChange(of: focus) { old, _ in
+            // Text saves when you click away (Return too), like Notion: no Save buttons.
+            if old == .title { commitTitle() }
+            if old == .location { commitLocation() }
+            if old == .notes { commitNotes() }
+            if old == .rsvpNote { commitRSVPNote() }
+        }
         .task(id: event.key) {
             start = event.start
             end = event.end
             myResponse = event.selfResponse
             titleDraft = event.title
-            locationDraft = event.location ?? ""
+            locationDraft = event.customLinkSpot == .location ? "" : (event.location ?? "")
             notesDraft = Self.plainText(event.notes ?? "")
             colorId = GoogleEventColors.id(forHex: event.eventColor)
             isBusy = event.isBusy
@@ -99,105 +70,136 @@ struct EventInspector: View {
             calendarId = event.calendarId
             removedGuests = []
             newGuest = ""
+            rsvpNote = event.attendees.first { $0.isSelf }?.note ?? ""
             mappedContainer = try? await model.store.db.read { try EventMapper.load($0).containerId(for: event) }
         }
     }
 
-    // MARK: Sections
+    // MARK: Title + time
 
     private var titleSection: some View {
-        section {
-            HStack(alignment: .top, spacing: WSSpace.s) {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color(hex: colorId.flatMap(GoogleEventColors.hex) ?? model.calendarSource.color(forCalendar: event.calendarId, fallback: event.calendarColor)))
-                    .frame(width: 4, height: 22)
-                if editable {
-                    TextField("Title", text: $titleDraft, axis: .vertical)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 16, weight: .semibold))
-                        .focused($focus, equals: .title)
-                        .onSubmit(commitTitle)
-                        .onChange(of: focus) { old, _ in
-                            if old == .title { commitTitle() }
-                            if old == .location { commitLocation() }
-                        }
-                } else {
-                    Text(event.title)
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(event.isDeclined ? WSColor.textTertiary : WSColor.textPrimary)
-                        .strikethrough(event.isDeclined)
-                        .textSelection(.enabled)
-                }
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(Color(hex: shownColorHex))
+                .frame(width: 3, height: 16)
+            if editable {
+                TextField("Title", text: $titleDraft, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 18, weight: .medium))
+                    .focused($focus, equals: .title)
+                    .onSubmit(commitTitle)
+            } else {
+                Text(event.title)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(event.isDeclined ? WSColor.textTertiary : WSColor.textPrimary)
+                    .strikethrough(event.isDeclined)
+                    .textSelection(.enabled)
             }
         }
+        .padding(.horizontal, WSSpace.l)
+        .padding(.top, WSSpace.l)
+        .padding(.bottom, WSSpace.m)
     }
 
     private var timeSection: some View {
-        section {
-            row(icon: "clock") {
-                VStack(alignment: .leading, spacing: 6) {
-                    if event.isWritable && !event.isAllDay {
-                        HStack(spacing: 6) {
-                            DatePicker("", selection: $start, displayedComponents: .hourAndMinute).labelsHidden()
-                            Image(systemName: "arrow.right").foregroundStyle(WSColor.textTertiary).imageScale(.small)
-                            DatePicker("", selection: $end, in: start..., displayedComponents: .hourAndMinute).labelsHidden()
-                            Text(duration).foregroundStyle(WSColor.textTertiary)
+        row(icon: "clock") {
+            VStack(alignment: .leading, spacing: 6) {
+                if event.isAllDay {
+                    Text("All day").foregroundStyle(WSColor.textPrimary)
+                } else {
+                    HStack(spacing: 8) {
+                        if editable {
+                            TimeChoice(time: start, earliest: nil, reference: nil) { setTimes(start: $0, keepLength: true) }
+                            Image(systemName: "arrow.right").font(.system(size: 10)).foregroundStyle(WSColor.textTertiary)
+                            TimeChoice(time: end, earliest: start, reference: start) { setTimes(end: $0) }
+                        } else {
+                            Text(WSFormat.time(event.start))
+                            Image(systemName: "arrow.right").font(.system(size: 10)).foregroundStyle(WSColor.textTertiary)
+                            Text(WSFormat.time(event.end))
                         }
-                        DatePicker("", selection: $start, displayedComponents: .date).labelsHidden().fixedSize()
-                        if start != event.start || end != event.end {
-                            Button("Save change") { model.updateEvent(event, start: start, end: end) }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
-                        }
-                    } else {
-                        HStack(spacing: 6) {
-                            Text(event.isAllDay ? "All day" : WSFormat.time(event.start))
-                            if !event.isAllDay {
-                                Image(systemName: "arrow.right").foregroundStyle(WSColor.textTertiary).imageScale(.small)
-                                Text(WSFormat.time(event.end))
-                                Text(duration).foregroundStyle(WSColor.textTertiary)
-                            }
-                        }
-                        Text(event.start.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))
-                    }
-                    if event.isRecurring {
-                        Label("Repeats", systemImage: "repeat")
-                            .font(.system(size: 11.5)).foregroundStyle(WSColor.textTertiary)
-                    }
-                    if editable {
-                        Toggle("All-day", isOn: Binding(get: { event.isAllDay }, set: { v in save { $0.isAllDay = v } }))
-                            .checkboxToggleStyle()
-                            .font(.system(size: 12))
-                            .foregroundStyle(WSColor.textSecondary)
+                        Text(duration).foregroundStyle(WSColor.textTertiary)
                     }
                 }
+                if editable {
+                    DayChoice(day: LocalDate(start)) { moveToDay($0) }
+                } else {
+                    Text(event.start.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))
+                }
+                HStack(spacing: 14) {
+                    if editable {
+                        quietToggle("All-day", on: event.isAllDay) { save { $0.isAllDay = !event.isAllDay } }
+                    }
+                    if event.isRecurring {
+                        Label("Repeats", systemImage: "repeat").labelStyle(.titleAndIcon)
+                    }
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(WSColor.textTertiary)
             }
         }
+        .padding(.bottom, WSSpace.s)
     }
 
-    private var guestsSection: some View {
+    /// Start moves keep the length; end moves change it. Applies at once.
+    private func setTimes(start newStart: Date? = nil, end newEnd: Date? = nil, keepLength: Bool = false) {
+        var s = start, e = end
+        if let newStart {
+            let length = end.timeIntervalSince(start)
+            s = newStart
+            if keepLength { e = newStart.addingTimeInterval(length) }
+        }
+        if let newEnd { e = max(newEnd, s.addingTimeInterval(15 * 60)) }
+        start = s; end = e
+        model.updateEvent(event, start: s, end: e)
+    }
+
+    private func moveToDay(_ day: LocalDate) {
+        let shift = TimeInterval(LocalDate(start).daysUntil(day)) * 86_400
+        guard shift != 0 else { return }
+        // Same clock time on the new day (DST-safe).
+        let cal = Calendar.current
+        let t = cal.dateComponents([.hour, .minute], from: start)
+        let newStart = cal.date(bySettingHour: t.hour ?? 0, minute: t.minute ?? 0, second: 0,
+                                of: day.startOfDay(in: .current)) ?? start.addingTimeInterval(shift)
+        setTimes(start: newStart, keepLength: true)
+    }
+
+    // MARK: People
+
+    @ViewBuilder private var peopleSection: some View {
         let guests = event.attendees.sorted { a, b in
             if a.isOrganizer != b.isOrganizer { return a.isOrganizer }
             if a.isSelf != b.isSelf { return a.isSelf }
             return a.displayName < b.displayName
         }
-        let shown = showAllGuests ? guests : Array(guests.prefix(6))
-        return section {
+        let canInvite = editable && event.provider == .google
+        if !guests.isEmpty || event.organizer != nil || canInvite {
             row(icon: "person.2") {
                 VStack(alignment: .leading, spacing: 8) {
                     if !guests.isEmpty {
-                        VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 6) {
                             Text("\(guestCount) guest\(guestCount == 1 ? "" : "s")")
-                            Text(replySummary).font(.system(size: 11.5)).foregroundStyle(WSColor.textTertiary)
+                            Text(replySummary).foregroundStyle(WSColor.textTertiary)
                         }
                     }
                     if guests.isEmpty, let organizer = event.organizer {
                         guestRow(organizer)
                     }
+                    let shown = showAllGuests ? guests : Array(guests.prefix(6))
                     ForEach(shown, id: \.email) { guestRow($0) }
                     if guests.count > shown.count {
                         Button("Show all \(guests.count)") { showAllGuests = true }
-                            .buttonStyle(.borderless).font(.system(size: 12))
+                            .buttonStyle(.plain).foregroundStyle(WSColor.textSecondary)
+                    }
+                    if canInvite {
+                        TextField(guests.isEmpty ? "Participants" : "Add participant", text: $newGuest)
+                            .textFieldStyle(.plain)
+                            .onSubmit {
+                                let email = newGuest.trimmingCharacters(in: .whitespaces)
+                                guard email.contains("@") else { return }
+                                save { $0.addGuests = [email] }
+                                newGuest = ""
+                            }
                     }
                     if event.canRSVP {
                         rsvpControl
@@ -208,35 +210,36 @@ struct EventInspector: View {
     }
 
     private func guestRow(_ g: EventAttendee) -> some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             ZStack(alignment: .bottomTrailing) {
-                Circle().fill(WSColor.hairline).frame(width: 22, height: 22)
+                Circle().fill(WSColor.hairline).frame(width: 20, height: 20)
                     .overlay(Text(String(g.displayName.prefix(1)).uppercased())
-                        .font(.system(size: 10, weight: .semibold)).foregroundStyle(WSColor.textSecondary))
+                        .font(.system(size: 9.5, weight: .medium)).foregroundStyle(WSColor.textSecondary))
                     .overlay {
-                        if g.isGroup { Image(systemName: "person.3.fill").font(.system(size: 8)).foregroundStyle(WSColor.textSecondary) }
+                        if g.isGroup { Image(systemName: "person.3.fill").font(.system(size: 7)).foregroundStyle(WSColor.textSecondary) }
                     }
                 responseBadge(g.response)
             }
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(g.displayName + (g.isSelf ? " (you)" : "")).lineLimit(1)
-                if g.isOrganizer {
-                    Text("Organizer").font(.system(size: 11)).foregroundStyle(WSColor.textTertiary)
-                } else if g.isOptional {
-                    Text("Optional").font(.system(size: 11)).foregroundStyle(WSColor.textTertiary)
+                if g.isOrganizer || g.isOptional {
+                    Text(g.isOrganizer ? "Organizer" : "Optional").font(.system(size: 11)).foregroundStyle(WSColor.textTertiary)
+                }
+                if let note = g.note, !g.isSelf {
+                    Text("“\(note)”").font(.system(size: 11.5)).foregroundStyle(WSColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 0)
             if editable && event.provider == .google && !g.isSelf && !g.isOrganizer {
                 Button { removedGuests.insert(g.email); save { $0.removeGuests = [g.email] } } label: {
-                    Image(systemName: "xmark").imageScale(.small)
+                    Image(systemName: "xmark").font(.system(size: 9))
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(WSColor.textTertiary)
                 .help("Remove guest")
             }
         }
-        .font(.system(size: 12.5))
         .opacity(removedGuests.contains(g.email) ? 0.35 : 1)
     }
 
@@ -251,108 +254,124 @@ struct EventInspector: View {
 
     private func badge(_ symbol: String, _ color: Color) -> some View {
         Image(systemName: symbol)
-            .font(.system(size: 6, weight: .heavy))
+            .font(.system(size: 5.5, weight: .heavy))
             .foregroundStyle(.white)
-            .frame(width: 10, height: 10)
+            .frame(width: 9, height: 9)
             .background(Circle().fill(color))
             .overlay(Circle().strokeBorder(WSColor.raised, lineWidth: 1))
             .offset(x: 2, y: 2)
     }
 
+    /// Going? Yes / No / Maybe, plus an optional note that goes to the organizer.
     private var rsvpControl: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Going?").font(.system(size: 11, weight: .semibold)).foregroundStyle(WSColor.textTertiary)
-            HStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 14) {
+                Text("Going?").foregroundStyle(WSColor.textTertiary)
                 rsvpButton("Yes", .accepted)
                 rsvpButton("No", .declined)
                 rsvpButton("Maybe", .tentative)
             }
-            .background(RoundedRectangle(cornerRadius: 7).fill(WSColor.canvas))
+            TextField("Add a note for the organizer", text: $rsvpNote, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12.5))
+                .lineLimit(1...4)
+                .focused($focus, equals: .rsvpNote)
+                .onSubmit(commitRSVPNote)
         }
+        .padding(.top, 2)
     }
 
     private func rsvpButton(_ title: String, _ response: EventAttendee.Response) -> some View {
         let on = myResponse == response
         return Button {
             myResponse = response
-            model.respond(event, response)
+            model.respond(event, response, note: rsvpNote.trimmingCharacters(in: .whitespacesAndNewlines))
         } label: {
             Text(title)
-                .font(.system(size: 12.5, weight: on ? .semibold : .regular))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 5)
-                .background(RoundedRectangle(cornerRadius: 6).fill(on ? WSColor.hairline : .clear))
+                .fontWeight(on ? .semibold : .regular)
+                .foregroundStyle(on ? WSColor.textPrimary : WSColor.textSecondary)
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(RoundedRectangle(cornerRadius: 4).fill(on ? WSColor.hairline : .clear))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(on ? WSColor.textPrimary : WSColor.textSecondary)
     }
 
-    private var whereSection: some View {
-        section {
-            VStack(alignment: .leading, spacing: 10) {
-                if let url = event.conferenceURL {
-                    row(icon: "video") {
-                        HStack(spacing: 8) {
-                            Link(destination: url) {
-                                Text("Join \(event.conferenceName ?? "call")")
-                                    .font(.system(size: 12.5, weight: .semibold))
-                                    .padding(.horizontal, 10).padding(.vertical, 4)
-                                    .background(RoundedRectangle(cornerRadius: 6).fill(WSColor.action))
-                                    .foregroundStyle(.white)
-                            }
-                            Text(url.host ?? "").font(.system(size: 11)).foregroundStyle(WSColor.textTertiary).lineLimit(1)
-                            Spacer(minLength: 0)
-                            Menu {
-                                Button("Copy Link") { Platform.copy(url.absoluteString) }
-                                if editable {
-                                    Button("Remove Link", role: .destructive) { removeLink() }
-                                }
-                            } label: {
-                                Image(systemName: "ellipsis").font(.system(size: 11))
-                            }
-                            .menuStyle(.borderlessButton)
-                            .menuIndicator(.hidden)
-                            .fixedSize()
-                        }
+    private func commitRSVPNote() {
+        let note = rsvpNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        let current = event.attendees.first { $0.isSelf }?.note ?? ""
+        guard note != current else { return }
+        // A note on its own counts as "Yes" if you haven't answered yet.
+        let response = myResponse.flatMap { $0 == .needsAction ? nil : $0 } ?? .accepted
+        myResponse = response
+        model.respond(event, response, note: note)
+    }
+
+    // MARK: Where
+
+    @ViewBuilder private var whereSection: some View {
+        if let url = event.conferenceURL {
+            row(icon: "video") {
+                HStack(spacing: 8) {
+                    Link(destination: url) {
+                        Text("Join \(event.conferenceName ?? "call")")
+                            .fontWeight(.medium)
+                            .foregroundStyle(WSColor.action)
                     }
-                } else if editable {
-                    row(icon: "video") {
-                        if addingLink {
-                            TextField("Paste a Zoom, Teams or other link", text: $linkDraft)
-                                .textFieldStyle(.plain)
-                                .focused($focus, equals: .link)
-                                .onSubmit(addLink)
-                                .onEscape { addingLink = false; linkDraft = "" }
-                        } else {
-                            HStack(spacing: 14) {
-                                if event.provider == .google {
-                                    Button("Add Google Meet") { save { $0.addMeet = true } }
-                                }
-                                Button("Add link") { addingLink = true; focus = .link }
-                            }
-                            .buttonStyle(.borderless)
-                            .font(.system(size: 12.5))
-                        }
+                    Text(url.host ?? "").font(.system(size: 11.5)).foregroundStyle(WSColor.textTertiary).lineLimit(1)
+                    Spacer(minLength: 0)
+                    PlainMenu {
+                        Button("Copy Link") { Platform.copy(url.absoluteString) }
+                        if editable { Button("Remove Link", role: .destructive) { removeLink() } }
+                    } label: {
+                        Image(systemName: "ellipsis").font(.system(size: 11)).foregroundStyle(WSColor.textTertiary)
                     }
                 }
-                if editable, event.customLinkSpot != .location {
-                    row(icon: "mappin.and.ellipse") {
-                        TextField("Add location", text: $locationDraft)
-                            .textFieldStyle(.plain)
-                            .focused($focus, equals: .location)
-                            .onSubmit(commitLocation)
-                    }
-                } else if let location = event.location, !location.isEmpty, event.customLinkSpot != .location {
-                    row(icon: "mappin.and.ellipse") {
-                        if let maps = URL(string: "https://maps.apple.com/?q=\(location.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")") {
-                            Link(location, destination: maps)
-                                .font(.system(size: 12.5))
-                                .foregroundStyle(WSColor.textPrimary)
-                                .underline()
-                        }
+            }
+        } else if editable {
+            row(icon: "video") {
+                if addingLink {
+                    TextField("Paste a Zoom, Teams or other link", text: $linkDraft)
+                        .textFieldStyle(.plain)
+                        .focused($focus, equals: .link)
+                        .onSubmit(addLink)
+                        .onEscape { addingLink = false; linkDraft = "" }
+                } else {
+                    PlainMenu {
+                        if event.provider == .google { Button("Add Google Meet") { save { $0.addMeet = true } } }
+                        Button("Add Link…") { addingLink = true; focus = .link }
+                    } label: {
+                        Text("Conferencing").foregroundStyle(WSColor.textTertiary)
                     }
                 }
+            }
+        }
+        if editable, event.customLinkSpot != .location {
+            row(icon: "mappin.and.ellipse") {
+                TextField("Location", text: $locationDraft)
+                    .textFieldStyle(.plain)
+                    .focused($focus, equals: .location)
+                    .onSubmit(commitLocation)
+            }
+        } else if let location = event.location, !location.isEmpty, event.customLinkSpot != .location {
+            row(icon: "mappin.and.ellipse") {
+                if let maps = URL(string: "https://maps.apple.com/?q=\(location.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")") {
+                    Link(location, destination: maps).foregroundStyle(WSColor.textPrimary)
+                }
+            }
+        }
+        if editable {
+            row(icon: "text.alignleft") {
+                TextField("Description", text: $notesDraft, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...14)
+                    .focused($focus, equals: .notes)
+            }
+        } else if let notes = event.notes, !notes.isEmpty {
+            row(icon: "text.alignleft") {
+                Text(Self.plainText(notes))
+                    .foregroundStyle(WSColor.textSecondary)
+                    .textSelection(.enabled)
             }
         }
     }
@@ -389,101 +408,112 @@ struct EventInspector: View {
         }
     }
 
-    private var calendarSection: some View {
-        section {
-            VStack(alignment: .leading, spacing: 8) {
-                row(icon: "calendar") {
-                    if editable && !sameAccountCalendars.isEmpty {
-                        Picker("", selection: Binding(get: { calendarId }, set: { id in
-                            calendarId = id
-                            save { $0.calendarId = id }
-                        })) {
-                            ForEach(sameAccountCalendars) { cal in
-                                Label { Text(cal.title) } icon: { ColorSwatchImage.image(hex: cal.color) }.tag(cal.id)
-                            }
-                        }
-                        .labelsHidden()
-                        .fixedSize()
+    /// Calendar · color, then busy · visibility, alerts and class/project as one quiet
+    /// block of plain text (each opens a menu).
+    private var settingsSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            row(icon: "calendar") {
+                HStack(spacing: 8) {
+                    if editable && event.provider == .google {
+                        colorMenu
                     } else {
-                        HStack(spacing: 6) {
-                            RoundedRectangle(cornerRadius: 3)
-                                .fill(Color(hex: model.calendarSource.color(forCalendar: event.calendarId, fallback: event.calendarColor)))
-                                .frame(width: 12, height: 12)
-                            Text(event.calendarTitle).lineLimit(1)
-                            if !event.isWritable { Image(systemName: "lock").imageScale(.small).foregroundStyle(WSColor.textTertiary) }
+                        RoundedRectangle(cornerRadius: 3).fill(Color(hex: shownColorHex)).frame(width: 12, height: 12)
+                    }
+                    if editable && sameAccountCalendars.count > 1 {
+                        PlainMenu {
+                            ForEach(sameAccountCalendars) { cal in
+                                Button {
+                                    calendarId = cal.id
+                                    save { $0.calendarId = cal.id }
+                                } label: {
+                                    Label { Text(cal.title + (cal.id == calendarId ? "  ✓" : "")) } icon: { ColorSwatchImage.image(hex: cal.color) }
+                                }
+                            }
+                        } label: {
+                            Text(sameAccountCalendars.first { $0.id == calendarId }?.title ?? event.calendarTitle).lineLimit(1)
                         }
+                    } else {
+                        Text(event.calendarTitle).lineLimit(1)
+                        if !event.isWritable { Image(systemName: "lock").font(.system(size: 10)).foregroundStyle(WSColor.textTertiary) }
                     }
                 }
-                if editable && event.provider == .google {
-                    row(icon: "paintpalette") { colorMenu }
-                }
-                row(icon: "circle.lefthalf.filled") {
+            }
+            row(icon: nil) {
+                HStack(spacing: 18) {
                     if editable {
-                        Picker("", selection: Binding(get: { isBusy }, set: { v in isBusy = v; save { $0.isBusy = v } })) {
-                            Text("Busy").tag(true)
-                            Text("Free").tag(false)
+                        PlainMenu {
+                            Button("Busy") { isBusy = true; save { $0.isBusy = true } }
+                            Button("Free") { isBusy = false; save { $0.isBusy = false } }
+                        } label: { Text(isBusy ? "Busy" : "Free") }
+                        if event.provider == .google {
+                            PlainMenu {
+                                Button("Default visibility") { visibility = "default"; save { $0.visibility = "default" } }
+                                Button("Public") { visibility = "public"; save { $0.visibility = "public" } }
+                                Button("Private") { visibility = "private"; save { $0.visibility = "private" } }
+                            } label: { Text(visibility == "default" ? "Default visibility" : visibility.capitalized) }
                         }
-                        .labelsHidden().fixedSize()
                     } else {
                         Text(event.isBusy ? "Busy" : "Free")
                     }
                 }
-                if editable && event.provider == .google {
-                    row(icon: "eye") {
-                        Picker("", selection: Binding(get: { visibility }, set: { v in visibility = v; save { $0.visibility = v } })) {
-                            Text("Default visibility").tag("default")
-                            Text("Public").tag("public")
-                            Text("Private").tag("private")
-                        }
-                        .labelsHidden().fixedSize()
-                    }
-                }
+                .foregroundStyle(WSColor.textSecondary)
+            }
+            row(icon: "bell") {
                 if editable {
-                    row(icon: "bell") { remindersEditor }
-                } else if !event.reminders.isEmpty {
-                    row(icon: "bell") {
-                        Text(event.reminders.map(Self.reminderText).joined(separator: ", "))
+                    PlainMenu {
+                        ForEach([0, 5, 10, 15, 30, 60, 120, 1440], id: \.self) { m in
+                            Button {
+                                setReminders(reminders.contains(m) ? reminders.filter { $0 != m } : (reminders + [m]).sorted())
+                            } label: {
+                                Text(Self.reminderText(m) + (reminders.contains(m) ? "  ✓" : ""))
+                            }
+                        }
+                    } label: {
+                        Text(reminders.isEmpty ? "Reminders" : reminders.map(Self.reminderText).joined(separator: ", "))
+                            .foregroundStyle(reminders.isEmpty ? WSColor.textTertiary : WSColor.textPrimary)
+                            .lineLimit(2)
                     }
+                } else {
+                    Text(event.reminders.isEmpty ? "No reminders" : event.reminders.map(Self.reminderText).joined(separator: ", "))
+                        .foregroundStyle(event.reminders.isEmpty ? WSColor.textTertiary : WSColor.textPrimary)
                 }
             }
-        }
-    }
-
-    private var belongsSection: some View {
-        section {
-            VStack(alignment: .leading, spacing: 4) {
-                Picker("Belongs to", selection: Binding(
-                    get: { mappedContainer },
-                    set: { id in
-                        mappedContainer = id
-                        model.assign(event, to: id)
-                    }
-                )) {
-                    Text("Not assigned").tag(UUID?.none)
+            row(icon: "folder") {
+                PlainMenu {
+                    Button("Not assigned") { mappedContainer = nil; model.assign(event, to: nil) }
+                    Divider()
                     ForEach(model.taskHolders) { c in
-                        Text(model.locationLabels[c.id] ?? c.name).tag(UUID?.some(c.id))
+                        Button(model.locationLabels[c.id] ?? c.name) { mappedContainer = c.id; model.assign(event, to: c.id) }
                     }
+                } label: {
+                    Text(mappedContainer.flatMap { model.locationLabels[$0] ?? model.container($0)?.name } ?? "Belongs to a class or project")
+                        .foregroundStyle(mappedContainer == nil ? WSColor.textTertiary : WSColor.textPrimary)
+                        .lineLimit(1)
                 }
-                Text("Assigned events show in that class or project's calendar and take its color.")
-                    .font(.system(size: 11)).foregroundStyle(WSColor.textTertiary)
+                .help("Assigned events show in that class or project's calendar and take its color.")
             }
         }
     }
 
-    private var actionsSection: some View {
-        section {
+    @ViewBuilder private var footer: some View {
+        if event.htmlLink != nil || event.isWritable {
             HStack {
                 if let link = event.htmlLink {
-                    Link(destination: link) { Label("Open in Google Calendar", systemImage: "arrow.up.right.square") }
-                        .font(.system(size: 12))
+                    Link(destination: link) {
+                        Label("Open in Google Calendar", systemImage: "arrow.up.right")
+                    }
+                    .foregroundStyle(WSColor.textTertiary)
                 }
                 Spacer()
                 if event.isWritable {
-                    Button("Delete", role: .destructive) { model.deleteEvents([event]) }
-                        .buttonStyle(.borderless)
-                        .font(.system(size: 12))
+                    Button("Delete") { model.deleteEvents([event]) }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(WSColor.now.opacity(0.85))
                 }
             }
+            .font(.system(size: 12))
+            .padding(.horizontal, WSSpace.l)
+            .padding(.top, WSSpace.m)
         }
     }
 
@@ -495,34 +525,16 @@ struct EventInspector: View {
         return model.calendarSource.writableCalendars.filter { $0.account == mine?.account && $0.provider == event.provider }
     }
 
-    /// "Add guest" field: type an email and press Return (they get an invite).
-    private var addGuestRow: some View {
-        HStack(spacing: WSSpace.m) {
-            Image(systemName: "person.badge.plus").font(.system(size: 13)).foregroundStyle(WSColor.textTertiary).frame(width: 18)
-            TextField("Add guest by email", text: $newGuest)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13))
-                .onSubmit {
-                    let email = newGuest.trimmingCharacters(in: .whitespaces)
-                    guard email.contains("@") else { return }
-                    save { $0.addGuests = [email] }
-                    newGuest = ""
-                }
-        }
-    }
-
     /// A palette of real swatches (menus can't show colors reliably).
     private var colorMenu: some View {
         let calendarHex = model.calendarSource.color(forCalendar: event.calendarId, fallback: event.calendarColor)
         return Button { showColors.toggle() } label: {
-            HStack(spacing: 6) {
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(Color(hex: colorId.flatMap(GoogleEventColors.hex) ?? calendarHex))
-                    .frame(width: 12, height: 12)
-                Text(colorId.flatMap { id in GoogleEventColors.all.first { $0.id == id }?.name } ?? "Calendar color")
-                Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(WSColor.textTertiary)
-            }
+            RoundedRectangle(cornerRadius: 3)
+                .fill(Color(hex: colorId.flatMap(GoogleEventColors.hex) ?? calendarHex))
+                .frame(width: 12, height: 12)
+                .contentShape(Rectangle())
         }
+        .help(colorId.flatMap { id in GoogleEventColors.all.first { $0.id == id }?.name } ?? "Calendar color")
         .buttonStyle(.plain)
         .popover(isPresented: $showColors, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 8) {
@@ -560,31 +572,6 @@ struct EventInspector: View {
         .buttonStyle(.plain)
     }
 
-    private var remindersEditor: some View {
-        let options = [0, 5, 10, 15, 30, 60, 120, 1440]
-        return HStack(spacing: 6) {
-            ForEach(reminders, id: \.self) { m in
-                HStack(spacing: 3) {
-                    Text(Self.reminderText(m))
-                    Button { setReminders(reminders.filter { $0 != m }) } label: { Image(systemName: "xmark").imageScale(.small) }
-                        .buttonStyle(.plain).foregroundStyle(WSColor.textTertiary)
-                }
-                .font(.system(size: 12))
-                .padding(.horizontal, 7).padding(.vertical, 2)
-                .background(Capsule().fill(WSColor.hairline))
-            }
-            Menu {
-                ForEach(options.filter { !reminders.contains($0) }, id: \.self) { m in
-                    Button(Self.reminderText(m)) { setReminders((reminders + [m]).sorted()) }
-                }
-            } label: {
-                Text(reminders.isEmpty ? "Add alert" : "+").font(.system(size: 12))
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-        }
-    }
-
     private func setReminders(_ value: [Int]) {
         reminders = value
         save { $0.reminders = value }
@@ -597,8 +584,13 @@ struct EventInspector: View {
     }
 
     private func commitLocation() {
-        guard locationDraft != (event.location ?? "") else { return }
+        guard event.customLinkSpot != .location, locationDraft != (event.location ?? "") else { return }
         save { $0.location = locationDraft }
+    }
+
+    private func commitNotes() {
+        guard notesDraft != Self.plainText(event.notes ?? "") else { return }
+        save { $0.notes = notesDraft }
     }
 
     private func save(_ change: (inout EventChanges) -> Void) {
@@ -609,26 +601,43 @@ struct EventInspector: View {
 
     // MARK: Helpers
 
-    private var divider: some View { Rectangle().fill(WSColor.hairline).frame(height: 1) }
-
-    private func section<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        content()
-            .frame(maxWidth: .infinity, alignment: .leading)
+    private var divider: some View {
+        Rectangle().fill(WSColor.hairline).frame(height: 1)
             .padding(.horizontal, WSSpace.l)
-            .padding(.vertical, WSSpace.m)
+            .padding(.vertical, WSSpace.s)
     }
 
-    private func row<Content: View>(icon: String, @ViewBuilder _ content: () -> Content) -> some View {
-        HStack(alignment: .top, spacing: WSSpace.m) {
-            Image(systemName: icon)
-                .font(.system(size: 13))
-                .foregroundStyle(WSColor.textTertiary)
-                .frame(width: 18)
-                .padding(.top, 1)
+    /// The shown color: the event's own, else its calendar's.
+    private var shownColorHex: UInt32 {
+        colorId.flatMap(GoogleEventColors.hex)
+            ?? model.calendarSource.color(forCalendar: event.calendarId, fallback: event.calendarColor)
+    }
+
+    /// One line: a quiet icon, then plain text (no boxes).
+    private func row<Content: View>(icon: String?, @ViewBuilder _ content: () -> Content) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Group {
+                if let icon { Image(systemName: icon) } else { Color.clear }
+            }
+            .font(.system(size: 12.5))
+            .foregroundStyle(WSColor.textTertiary)
+            .frame(width: 16)
             content()
                 .font(.system(size: 13))
                 .foregroundStyle(WSColor.textPrimary)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(.horizontal, WSSpace.l)
+        .padding(.vertical, 6)
+    }
+
+    private func quietToggle(_ title: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .foregroundStyle(on ? WSColor.textPrimary : WSColor.textTertiary)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var duration: String {
@@ -666,5 +675,220 @@ struct EventInspector: View {
             .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
             .replacingOccurrences(of: "&nbsp;", with: " ")
             .replacingOccurrences(of: "&amp;", with: "&")
+    }
+}
+
+/// A menu that looks like plain text (Notion-style): no button chrome or arrows.
+struct PlainMenu<Items: View, Label: View>: View {
+    @ViewBuilder let content: () -> Items
+    @ViewBuilder let label: () -> Label
+
+    init(@ViewBuilder _ content: @escaping () -> Items, @ViewBuilder label: @escaping () -> Label) {
+        self.content = content
+        self.label = label
+    }
+
+    var body: some View {
+        Menu(content: content, label: label)
+            #if os(macOS)
+            .menuStyle(.borderlessButton)
+            .padding(.leading, -3)   // borderless menus inset their label; line up with text
+            #else
+            .tint(WSColor.textPrimary)
+            #endif
+            .menuIndicator(.hidden)
+            .fixedSize()
+    }
+}
+
+/// A time shown as plain text; click for a list of times every 15 minutes.
+/// With `reference`, each choice also shows its length ("1h 30m") from it.
+struct TimeChoice: View {
+    let time: Date
+    let earliest: Date?
+    let reference: Date?
+    let pick: (Date) -> Void
+    @State private var open = false
+
+    var body: some View {
+        Button { open.toggle() } label: {
+            Text(WSFormat.time(time))
+                .padding(.horizontal, 4).padding(.vertical, 1)
+                .background(RoundedRectangle(cornerRadius: 4).fill(open ? WSColor.hairline : .clear))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, -4)
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(choices, id: \.self) { t in
+                            Button {
+                                open = false
+                                pick(t)
+                            } label: {
+                                HStack {
+                                    Text(WSFormat.time(t))
+                                    if let reference {
+                                        Text(Self.length(t.timeIntervalSince(reference))).foregroundStyle(WSColor.textTertiary)
+                                    }
+                                    Spacer()
+                                    if abs(t.timeIntervalSince(time)) < 60 { Image(systemName: "checkmark").font(.system(size: 10)) }
+                                }
+                                .font(.system(size: 12.5))
+                                .padding(.horizontal, 10).padding(.vertical, 5)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .id(t)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .frame(width: reference == nil ? 130 : 170, height: 260)
+                .onAppear { proxy.scrollTo(choices.min { abs($0.timeIntervalSince(time)) < abs($1.timeIntervalSince(time)) }, anchor: .center) }
+            }
+            .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private var choices: [Date] {
+        if let earliest {
+            // End times: from 15 minutes after the start, through the next 24 hours.
+            return (1...96).map { earliest.addingTimeInterval(TimeInterval($0) * 15 * 60) }
+        }
+        let dayStart = Calendar.current.startOfDay(for: time)
+        var list = (0..<96).map { dayStart.addingTimeInterval(TimeInterval($0) * 15 * 60) }
+        if !list.contains(where: { abs($0.timeIntervalSince(time)) < 60 }) { list.append(time); list.sort() }
+        return list
+    }
+
+    static func length(_ seconds: TimeInterval) -> String {
+        let minutes = Int(seconds / 60)
+        let h = minutes / 60, m = minutes % 60
+        return h > 0 ? (m > 0 ? "\(h)h \(m)m" : "\(h)h") : "\(m)m"
+    }
+}
+
+/// A day shown as plain text ("Tue, Nov 10"); click for a calendar. With no day, a
+/// gray placeholder ("Due date") opens the same calendar.
+struct DayChoice: View {
+    let day: LocalDate?
+    var placeholder = ""
+    var prefix = ""
+    let pick: (LocalDate) -> Void
+    @State private var open = false
+
+    init(day: LocalDate?, placeholder: String = "", prefix: String = "", pick: @escaping (LocalDate) -> Void) {
+        self.day = day
+        self.placeholder = placeholder
+        self.prefix = prefix
+        self.pick = pick
+    }
+
+    var body: some View {
+        Button { open.toggle() } label: {
+            Group {
+                if let day {
+                    Text(prefix + day.startOfDay(in: .current).formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))
+                } else {
+                    Text(placeholder).foregroundStyle(WSColor.textTertiary)
+                }
+            }
+            .padding(.horizontal, 4).padding(.vertical, 1)
+            .background(RoundedRectangle(cornerRadius: 4).fill(open ? WSColor.hairline : .clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, -4)
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            DatePicker("", selection: Binding(
+                get: { (day ?? LocalDate(Date())).startOfDay(in: .current) },
+                set: { d in open = false; pick(LocalDate(d)) }
+            ), displayedComponents: .date)
+            .datePickerStyle(.graphical)
+            .labelsHidden()
+            .padding(WSSpace.s)
+            .frame(width: 240)
+            .presentationCompactAdaptation(.popover)
+        }
+    }
+}
+
+/// One line of a details panel: a quiet icon, then plain text (Notion-style, no boxes).
+struct PanelRow<Content: View>: View {
+    let icon: String?
+    @ViewBuilder let content: () -> Content
+
+    init(icon: String?, @ViewBuilder _ content: @escaping () -> Content) {
+        self.icon = icon
+        self.content = content
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Group {
+                if let icon { Image(systemName: icon) } else { Color.clear }
+            }
+            .font(.system(size: 12.5))
+            .foregroundStyle(WSColor.textTertiary)
+            .frame(width: 16)
+            content()
+                .font(.system(size: 13))
+                .foregroundStyle(WSColor.textPrimary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, WSSpace.l)
+        .padding(.vertical, 6)
+    }
+}
+
+struct PanelDivider: View {
+    var body: some View {
+        Rectangle().fill(WSColor.hairline).frame(height: 1)
+            .padding(.horizontal, WSSpace.l)
+            .padding(.vertical, WSSpace.s)
+    }
+}
+
+/// Gray text you can click ("Add time", "Clear").
+struct QuietButton: View {
+    let title: String
+    var help: String? = nil
+    let action: () -> Void
+
+    init(_ title: String, help: String? = nil, action: @escaping () -> Void) {
+        self.title = title
+        self.help = help
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(title).foregroundStyle(WSColor.textTertiary).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help ?? title)
+    }
+}
+
+/// Text that's gray when off and bright when on ("All-day", "Milestone").
+struct QuietToggle: View {
+    let title: String
+    let on: Bool
+    let action: () -> Void
+
+    init(_ title: String, on: Bool, action: @escaping () -> Void) {
+        self.title = title
+        self.on = on
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(title).foregroundStyle(on ? WSColor.textPrimary : WSColor.textTertiary).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

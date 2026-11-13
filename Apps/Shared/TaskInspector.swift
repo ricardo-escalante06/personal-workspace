@@ -72,198 +72,229 @@ struct TaskInspector: View {
 
     private func form(_ task: TaskItem) -> some View {
         let color = ContainerColor(named: model.color(for: task))
-        return Form {
-            Section {
-                HStack(alignment: .firstTextBaseline, spacing: WSSpace.s) {
+        let today = LocalDate(Date())
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                // Title
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
                     TaskCheckbox(isDone: task.status == .done, color: color) { model.toggleDone(task) }
                     TextField("Title", text: $titleDraft, axis: .vertical)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 18, weight: .medium))
                         .textFieldStyle(.plain)
                         .focused($titleFocused)
                         .onSubmit(commitTitle)
                         .onChange(of: titleFocused) { _, focused in if !focused { commitTitle() } }
                 }
-            }
+                .padding(.horizontal, WSSpace.l)
+                .padding(.top, WSSpace.l)
+                .padding(.bottom, WSSpace.m)
 
-            if task.isMilestone {
-                Section {
-                    MilestoneSwatches(milestone: task)
-                } header: {
-                    Text("Milestone color")
-                } footer: {
-                    Text("Its tasks use this color on the timeline.")
-                        .font(.caption).foregroundStyle(WSColor.textTertiary)
-                }
-            }
-
-            Section(task.isOccurrence ? "This occurrence" : "Dates") {
-                if !task.isOccurrence {
-                Toggle("Start date", isOn: Binding(
-                    get: { task.startDate != nil },
-                    set: { on in model.editTask(task.id) { $0.startDate = on ? (task.dueDate.map { min($0, LocalDate(Date())) } ?? LocalDate(Date())) : nil } }
-                ))
-                if let start = task.startDate {
-                    DateField("Starts", date: start) { d in model.editTask(task.id) { $0.startDate = d } }
-                }
-                }
-                if !task.isRecurring {
-                Toggle("Due date", isOn: Binding(
-                    get: { task.dueDate != nil },
-                    set: { on in model.editTask(task.id) { $0.dueDate = on ? LocalDate(Date()) : nil } }
-                ))
-                }
-                if let due = task.dueDate {
-                    DateField("Due", date: due) { d in model.editTask(task.id) { $0.dueDate = d } }
-                    Toggle("Specific time", isOn: Binding(
-                        get: { task.dueTime != nil },
-                        set: { on in changeTime(task, on ? LocalTime(hour: 23, minute: 59) : nil) }
-                    ))
-                    if let time = task.dueTime {
-                        DatePicker("Time", selection: Binding(
-                            get: { due.at(time) },
-                            set: { d in
-                                let c = Calendar.current.dateComponents([.hour, .minute], from: d)
-                                changeTime(task, LocalTime(hour: c.hour ?? 0, minute: c.minute ?? 0))
+                // Dates first: they change the most.
+                PanelRow(icon: "flag") {
+                    HStack(spacing: 10) {
+                        if let due = task.dueDate {
+                            DayChoice(day: due) { d in model.editTask(task.id) { $0.dueDate = d } }
+                            if let time = task.dueTime {
+                                TimeChoice(time: due.at(time), earliest: nil, reference: nil) { d in
+                                    let c = Calendar.current.dateComponents([.hour, .minute], from: d)
+                                    changeTime(task, LocalTime(hour: c.hour ?? 0, minute: c.minute ?? 0))
+                                }
+                                QuietButton("✕", help: "No time") { changeTime(task, nil) }
+                            } else {
+                                QuietButton("Add time") { changeTime(task, LocalTime(hour: 23, minute: 59)) }
                             }
-                        ), displayedComponents: .hourAndMinute)
-                    }
-                }
-            }
-
-            Section {
-                Picker("Status", selection: binding(\.status)) {
-                    Text("Not started").tag(TaskStatus.notStarted)
-                    Text("In progress").tag(TaskStatus.inProgress)
-                    Text("Done").tag(TaskStatus.done)
-                    Text("Cancelled").tag(TaskStatus.cancelled)
-                }
-                HStack {
-                    Picker("Tag", selection: binding(\.categoryId)) {
-                        Text("None").tag(UUID?.none)
-                        ForEach(model.categories) { c in
-                            Text(c.name).tag(UUID?.some(c.id))
+                            Spacer(minLength: 0)
+                            if !task.isRecurring {
+                                QuietButton("Clear", help: "No due date") { model.editTask(task.id) { $0.dueDate = nil } }
+                            }
+                        } else {
+                            DayChoice(day: nil, placeholder: "Due date") { d in model.editTask(task.id) { $0.dueDate = d } }
                         }
                     }
-                    Button { newTagName = ""; showNewTag = true } label: { Image(systemName: "plus") }
-                        .buttonStyle(.borderless)
-                        .help("New tag")
-                    Button { model.showTagManager = true } label: { Image(systemName: "slider.horizontal.3") }
-                        .buttonStyle(.borderless)
-                        .help("Manage tags")
                 }
-                .alert("New Tag", isPresented: $showNewTag) {
-                    TextField("Name", text: $newTagName)
-                    Button("Add") { model.applyNewTag(newTagName, to: task.id) }
-                    Button("Cancel", role: .cancel) {}
+                if !task.isOccurrence {
+                    PanelRow(icon: "arrow.right.to.line") {
+                        HStack {
+                            DayChoice(day: task.startDate, placeholder: "Start date", prefix: "Starts ") { d in
+                                model.editTask(task.id) { t in t.startDate = t.dueDate.map { min(d, $0) } ?? d }
+                            }
+                            Spacer(minLength: 0)
+                            if task.startDate != nil {
+                                QuietButton("Clear", help: "No start date") { model.editTask(task.id) { $0.startDate = nil } }
+                            }
+                        }
+                    }
                 }
-                Toggle(isOn: binding(\.isStarred)) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Starred")
+                RepeatRow(task: task, series: series, editing: $editingRepeat)
+
+                PanelDivider()
+
+                PanelRow(icon: "circle.dashed") {
+                    PlainMenu {
+                        ForEach([TaskStatus.notStarted, .inProgress, .done, .cancelled], id: \.self) { st in
+                            Button(Self.statusName(st)) { model.editTask(task.id) { $0.status = st } }
+                        }
+                    } label: { Text(Self.statusName(task.status)) }
+                }
+                PanelRow(icon: "tag") {
+                    HStack(spacing: 8) {
+                        PlainMenu {
+                            Button("None") { model.editTask(task.id) { $0.categoryId = nil } }
+                            Divider()
+                            ForEach(model.categories) { c in
+                                Button(c.name) { model.editTask(task.id) { $0.categoryId = c.id } }
+                            }
+                            Divider()
+                            Button("New Tag…") { newTagName = ""; showNewTag = true }
+                            Button("Manage Tags…") { model.showTagManager = true }
+                        } label: {
+                            if let tag = model.tagStyle(task.categoryId) { TagPill(tag) }
+                            else { Text("Tag").foregroundStyle(WSColor.textTertiary) }
+                        }
                         if !task.isStarred, let c = model.category(task.categoryId), c.autoStar {
-                            Text("Starred automatically: \(c.name) tag")
-                                .font(.caption).foregroundStyle(WSColor.textTertiary)
+                            Text("auto-starred").font(.system(size: 11)).foregroundStyle(WSColor.textTertiary)
+                        }
+                    }
+                    .alert("New Tag", isPresented: $showNewTag) {
+                        TextField("Name", text: $newTagName)
+                        Button("Add") { model.applyNewTag(newTagName, to: task.id) }
+                        Button("Cancel", role: .cancel) {}
+                    }
+                }
+                PanelRow(icon: "tray") {
+                    PlainMenu {
+                        Button("Inbox") { model.editTask(task.id) { $0.containerId = nil } }
+                        Divider()
+                        ForEach(model.taskHolders) { c in
+                            Button(model.locationLabels[c.id] ?? c.name) { model.editTask(task.id) { $0.containerId = c.id } }
+                        }
+                    } label: {
+                        Text(task.containerId.flatMap { model.locationLabels[$0] ?? model.container($0)?.name } ?? "Inbox").lineLimit(1)
+                    }
+                }
+                PanelRow(icon: nil) {
+                    HStack(spacing: 18) {
+                        QuietToggle(task.isStarred ? "★ Starred" : "☆ Star", on: task.isStarred) {
+                            model.editTask(task.id) { $0.isStarred.toggle() }
+                        }
+                        PlainMenu {
+                            Button("No priority") { model.editTask(task.id) { $0.priority = nil } }
+                            Button("Low") { model.editTask(task.id) { $0.priority = 1 } }
+                            Button("Medium") { model.editTask(task.id) { $0.priority = 2 } }
+                            Button("High") { model.editTask(task.id) { $0.priority = 3 } }
+                        } label: {
+                            Text(task.priority.map { ["", "Low", "Medium", "High"][min($0, 3)] + " priority" } ?? "Priority")
+                                .foregroundStyle(task.priority == nil ? WSColor.textTertiary : WSColor.textSecondary)
                         }
                     }
                 }
-                Picker("Priority", selection: binding(\.priority)) {
-                    Text("None").tag(Int?.none)
-                    Text("Low").tag(Int?.some(1))
-                    Text("Medium").tag(Int?.some(2))
-                    Text("High").tag(Int?.some(3))
-                }
-                Picker("Location", selection: binding(\.containerId)) {
-                    Text("Inbox").tag(UUID?.none)
-                    ForEach(model.taskHolders) { c in
-                        Text(model.locationLabels[c.id] ?? c.name).tag(UUID?.some(c.id))
-                    }
-                }
-            }
 
-            if model.container(task.containerId)?.kind == .project {
-                Section("Project") {
-                    Toggle("This is a milestone", isOn: binding(\.isMilestone))
-                    if !task.isMilestone {
-                        Picker("Milestone", selection: binding(\.milestoneId)) {
-                            Text("None").tag(UUID?.none)
-                            ForEach(milestones) { m in Text(m.title).tag(UUID?.some(m.id)) }
+                if model.container(task.containerId)?.kind == .project {
+                    PanelRow(icon: "diamond") {
+                        HStack(spacing: 18) {
+                            QuietToggle("Milestone", on: task.isMilestone) {
+                                model.editTask(task.id) { $0.isMilestone.toggle() }
+                            }
+                            if !task.isMilestone {
+                                PlainMenu {
+                                    Button("None") { model.editTask(task.id) { $0.milestoneId = nil } }
+                                    ForEach(milestones) { m in
+                                        Button(m.title) { model.editTask(task.id) { $0.milestoneId = m.id } }
+                                    }
+                                } label: {
+                                    Text(milestones.first { $0.id == task.milestoneId }.map { "In " + $0.title } ?? "Part of a milestone")
+                                        .foregroundStyle(task.milestoneId == nil ? WSColor.textTertiary : WSColor.textSecondary)
+                                        .lineLimit(1)
+                                }
+                            }
                         }
                     }
+                    if task.isMilestone {
+                        PanelRow(icon: nil) { MilestoneSwatches(milestone: task) }
+                    }
                 }
-            }
 
-            RepeatSection(task: task, series: series, editing: $editingRepeat)
+                PanelDivider()
 
-            Section {
+                // Work blocks
                 ForEach(blocks) { block in
-                    BlockEditor(block: block)
+                    PanelRow(icon: "checklist") { BlockEditor(block: block) }
                 }
-                Button {
-                    model.addBlock(to: task)
-                } label: {
-                    Label("Add work block", systemImage: "plus")
+                PanelRow(icon: blocks.isEmpty ? "checklist" : nil) {
+                    QuietButton(blocks.isEmpty ? "Plan time to work on this" : "Add work block") { model.addBlock(to: task) }
                 }
-                .buttonStyle(.borderless)
-            } header: {
-                Text("Work blocks")
-            } footer: {
-                Text("Planned time to work on this. Moving a block never changes the deadline.")
-                    .font(.caption)
-                    .foregroundStyle(WSColor.textTertiary)
-            }
 
-            Section("Subtasks") {
+                // Subtasks
                 ForEach(subtasks) { sub in
-                    HStack(spacing: WSSpace.s) {
-                        TaskCheckbox(isDone: sub.status == .done, color: color) { model.toggleDone(sub) }
-                        Text(sub.title)
-                            .strikethrough(sub.status == .done)
-                            .foregroundStyle(sub.status == .done ? WSColor.textTertiary : WSColor.textPrimary)
+                    PanelRow(icon: nil) {
+                        HStack(spacing: WSSpace.s) {
+                            TaskCheckbox(isDone: sub.status == .done, color: color) { model.toggleDone(sub) }
+                            Text(sub.title)
+                                .strikethrough(sub.status == .done)
+                                .foregroundStyle(sub.status == .done ? WSColor.textTertiary : WSColor.textPrimary)
+                            Spacer()
+                            Button { model.deleteTask(sub.id) } label: { Image(systemName: "xmark").font(.system(size: 9)) }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(WSColor.textTertiary)
+                        }
+                    }
+                }
+                PanelRow(icon: "plus") {
+                    TextField("Add subtask", text: $newSubtask)
+                        .textFieldStyle(.plain)
+                        .onSubmit {
+                            let title = newSubtask.trimmingCharacters(in: .whitespaces)
+                            guard !title.isEmpty else { return }
+                            model.addSubtask(to: task, title: title)
+                            newSubtask = ""
+                        }
+                }
+
+                PanelDivider()
+
+                PanelRow(icon: "timer") {
+                    TextField("Estimate (minutes)", value: binding(\.estimatedMinutes), format: .number)
+                        .textFieldStyle(.plain)
+                }
+                PanelRow(icon: "link") {
+                    TextField("Link", text: Binding(
+                        get: { task.sourceUrl ?? "" },
+                        set: { v in model.editTask(task.id, typing: "Link") { $0.sourceUrl = v.isEmpty ? nil : v } }
+                    ))
+                    .textFieldStyle(.plain)
+                }
+                PanelRow(icon: "text.alignleft") {
+                    TextField("Notes", text: $notesDraft, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .lineLimit(2...20)
+                        .onChange(of: notesDraft) { _, value in
+                            guard value != task.notes else { return }
+                            model.editTask(task.id, typing: "Notes") { $0.notes = value }
+                        }
+                }
+
+                // Footer
+                HStack(spacing: 16) {
+                    if task.isOccurrence {
+                        QuietButton("Skip this one") { model.deleteTask(task.id) }
                         Spacer()
-                        Button { model.deleteTask(sub.id) } label: { Image(systemName: "xmark") }
-                            .buttonStyle(.borderless)
-                            .foregroundStyle(WSColor.textTertiary)
+                        Button("Delete repeating task") { if let s = series { model.deleteTask(s.id) } }
+                            .buttonStyle(.plain).foregroundStyle(WSColor.now.opacity(0.85))
+                    } else {
+                        if let due = task.dueDate, due < today, !task.status.isClosed {
+                            Text("Overdue").foregroundStyle(WSColor.now.opacity(0.85))
+                        }
+                        Spacer()
+                        Button("Delete") { model.deleteTask(task.id) }
+                            .buttonStyle(.plain).foregroundStyle(WSColor.now.opacity(0.85))
                     }
                 }
-                TextField("Add subtask", text: $newSubtask)
-                    .onSubmit {
-                        let title = newSubtask.trimmingCharacters(in: .whitespaces)
-                        guard !title.isEmpty else { return }
-                        model.addSubtask(to: task, title: title)
-                        newSubtask = ""
-                    }
+                .font(.system(size: 12))
+                .padding(.horizontal, WSSpace.l)
+                .padding(.top, WSSpace.m)
             }
-
-            Section("Details") {
-                LabeledContent("Estimate") {
-                    TextField("minutes", value: binding(\.estimatedMinutes), format: .number)
-                        .multilineTextAlignment(.trailing)
-                }
-                TextField("Link", text: Binding(
-                    get: { task.sourceUrl ?? "" },
-                    set: { v in model.editTask(task.id, typing: "Link") { $0.sourceUrl = v.isEmpty ? nil : v } }
-                ))
-            }
-
-            Section("Notes") {
-                TextEditor(text: $notesDraft)
-                    .font(WSFont.body)
-                    .frame(minHeight: 90)
-                    .onChange(of: notesDraft) { _, value in
-                        guard value != task.notes else { return }
-                        model.editTask(task.id, typing: "Notes") { $0.notes = value }
-                    }
-            }
-
-            Section {
-                if task.isOccurrence {
-                    Button("Skip This One") { model.deleteTask(task.id) }
-                    Button("Delete Repeating Task", role: .destructive) { if let s = series { model.deleteTask(s.id) } }
-                } else {
-                    Button("Delete Task", role: .destructive) { model.deleteTask(task.id) }
-                }
-            }
+            .padding(.bottom, WSSpace.m)
         }
-        .formStyle(.grouped)
         .confirmationDialog("Change the time for…", isPresented: Binding(
             get: { pendingTimeChange != nil }, set: { if !$0 { pendingTimeChange = nil } }), titleVisibility: .visible) {
             Button("Only This One") { applyTime(.one) }
@@ -276,8 +307,16 @@ struct TaskInspector: View {
         .sheet(isPresented: $editingRepeat) {
             if let base = series ?? self.task { RepeatEditorSheet(task: base) }
         }
-        .scrollContentBackground(.hidden)
         .background(WSColor.raised)
+    }
+
+    static func statusName(_ s: TaskStatus) -> String {
+        switch s {
+        case .notStarted: "Not started"
+        case .inProgress: "In progress"
+        case .done: "Done"
+        case .cancelled: "Cancelled"
+        }
     }
 
     /// Due time on a repeating task asks which occurrences it applies to.
@@ -315,42 +354,37 @@ struct TaskInspector: View {
 
 }
 
-/// One work block: day, start, end, delete.
+/// One work block: day, start → end, all plain text you click to change.
 private struct BlockEditor: View {
     @Environment(AppModel.self) private var model
     let block: ScheduleBlock
 
     var body: some View {
-        HStack {
-            // Day as plain text with a popover calendar; times stay steppers.
-            DateField("", date: LocalDate(block.startsAt)) { day in
+        HStack(spacing: 8) {
+            DayChoice(day: LocalDate(block.startsAt)) { day in
                 let cal = Calendar.current
-                let length = block.endsAt.timeIntervalSince(block.startsAt)
                 let t = cal.dateComponents([.hour, .minute], from: block.startsAt)
                 let start = cal.date(bySettingHour: t.hour ?? 0, minute: t.minute ?? 0, second: 0,
                                      of: day.startOfDay(in: .current)) ?? block.startsAt
-                model.updateBlock(block.id, start: start, end: start.addingTimeInterval(length), coalesce: true)
+                move(to: start)
             }
-            .fixedSize()
-            DatePicker("", selection: Binding(
-                get: { block.startsAt },
-                set: { start in
-                    let length = block.endsAt.timeIntervalSince(block.startsAt)
-                    model.updateBlock(block.id, start: start, end: start.addingTimeInterval(length), coalesce: true)
-                }
-            ), displayedComponents: .hourAndMinute)
-            .labelsHidden()
-            Text("–").foregroundStyle(WSColor.textTertiary)
-            DatePicker("", selection: Binding(
-                get: { block.endsAt },
-                set: { end in model.updateBlock(block.id, start: block.startsAt, end: end, coalesce: true) }
-            ), displayedComponents: .hourAndMinute)
-            .labelsHidden()
-            Spacer()
-            Button { model.deleteBlock(block.id) } label: { Image(systemName: "trash") }
-                .buttonStyle(.borderless)
+            TimeChoice(time: block.startsAt, earliest: nil, reference: nil) { move(to: $0) }
+            Image(systemName: "arrow.right").font(.system(size: 9)).foregroundStyle(WSColor.textTertiary)
+            TimeChoice(time: block.endsAt, earliest: block.startsAt, reference: block.startsAt) { end in
+                model.updateBlock(block.id, start: block.startsAt, end: end, coalesce: true)
+            }
+            Spacer(minLength: 0)
+            Button { model.deleteBlock(block.id) } label: { Image(systemName: "xmark").font(.system(size: 9)) }
+                .buttonStyle(.plain)
                 .foregroundStyle(WSColor.textTertiary)
+                .help("Remove this block")
         }
+    }
+
+    /// Keeps the block's length.
+    private func move(to start: Date) {
+        let length = block.endsAt.timeIntervalSince(block.startsAt)
+        model.updateBlock(block.id, start: start, end: start.addingTimeInterval(length), coalesce: true)
     }
 }
 

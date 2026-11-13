@@ -51,9 +51,11 @@ public enum GoogleCalendarAPI {
         public var responseStatus: String?
         /// Present on group attendees (mailing lists).
         public var additionalGuests: Int?
+        /// The note a guest sent with their reply.
+        public var comment: String?
 
         enum CodingKeys: String, CodingKey {
-            case email, displayName, organizer, optional, resource, responseStatus, additionalGuests
+            case email, displayName, organizer, optional, resource, responseStatus, additionalGuests, comment
             case isSelf = "self"
         }
     }
@@ -157,7 +159,8 @@ public enum GoogleCalendarAPI {
                 email: email, name: p.displayName,
                 response: EventAttendee.Response(rawValue: p.responseStatus ?? "") ?? .needsAction,
                 isSelf: p.isSelf ?? false, isOrganizer: p.organizer ?? false,
-                isOptional: p.optional ?? false, isGroup: (p.additionalGuests ?? 0) > 0
+                isOptional: p.optional ?? false, isGroup: (p.additionalGuests ?? 0) > 0,
+                note: p.comment
             )
         }
         let me = attendees.first { $0.isSelf }

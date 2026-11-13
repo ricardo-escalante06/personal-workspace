@@ -141,13 +141,26 @@ struct OpenCalendarWindowButton: View {
 
     var body: some View {
         if menuItem {
-            Button("Open Calendar in New Window") { openWindow(id: CalendarWindow.id) }
+            Button("Open Calendar in New Window", action: open)
                 .keyboardShortcut("k", modifiers: [.command, .shift])
         } else {
-            Button { openWindow(id: CalendarWindow.id) } label: {
-                Label("Calendar Window", systemImage: "macwindow.badge.plus")
-            }
+            Button(action: open) { label }
             .help("Open the calendar in its own window (⇧⌘K)")
+        }
+    }
+
+    private var label: some View {
+        Label("Calendar Window", systemImage: "macwindow.badge.plus")
+    }
+
+    /// One calendar window: bring it forward if it's already open.
+    private func open() {
+        if let existing = NSApp.windows.first(where: {
+            $0.isVisible && $0.identifier?.rawValue.hasPrefix(CalendarWindow.id) == true
+        }) {
+            existing.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow(id: CalendarWindow.id)
         }
     }
 }
@@ -176,6 +189,7 @@ struct CalendarWindow: View {
             .frame(minWidth: 640, minHeight: 480)
     }
 }
+
 #endif
 
 #if os(macOS)

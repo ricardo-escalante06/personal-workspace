@@ -13,11 +13,14 @@ public struct EventAttendee: Sendable, Hashable, Codable {
     public var isOptional: Bool
     /// A group/mailing list counts as one row with many members.
     public var isGroup: Bool
+    /// The note sent with their reply ("running 10 min late").
+    public var note: String?
 
     public init(email: String, name: String? = nil, response: Response, isSelf: Bool = false,
-                isOrganizer: Bool = false, isOptional: Bool = false, isGroup: Bool = false) {
+                isOrganizer: Bool = false, isOptional: Bool = false, isGroup: Bool = false, note: String? = nil) {
         self.email = email; self.name = name; self.response = response; self.isSelf = isSelf
         self.isOrganizer = isOrganizer; self.isOptional = isOptional; self.isGroup = isGroup
+        self.note = note?.isEmpty == true ? nil : note
     }
 
     public var displayName: String { name?.isEmpty == false ? name! : email }
@@ -103,6 +106,8 @@ public struct CalendarItem: Identifiable, Sendable, Equatable {
     public enum Source: Sendable, Equatable {
         case block(taskId: UUID, blockId: UUID)
         case deadline(taskId: UUID)
+        /// A task's working span (start date up to its due date), in the all-day row.
+        case span(taskId: UUID)
         case event(ExternalEvent)
     }
 
@@ -127,15 +132,21 @@ public struct CalendarItem: Identifiable, Sendable, Equatable {
         switch source {
         case .block(_, let blockId): "block-\(blockId)"
         case .deadline(let taskId): "due-\(taskId)"
+        case .span(let taskId): "span-\(taskId)"
         case .event(let e): "event-\(e.key)"
         }
     }
 
     public var taskId: UUID? {
         switch source {
-        case .block(let t, _), .deadline(let t): t
+        case .block(let t, _), .deadline(let t), .span(let t): t
         case .event: nil
         }
+    }
+
+    public var isSpan: Bool {
+        if case .span = source { return true }
+        return false
     }
 
     public var event: ExternalEvent? {

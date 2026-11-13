@@ -328,6 +328,7 @@ final class GoogleCalendarService {
                 var a: [String: Any] = ["email": email]
                 if let r = p.responseStatus { a["responseStatus"] = r }
                 if let o = p.optional { a["optional"] = o }
+                if let c = p.comment { a["comment"] = c }   // keep guests' reply notes
                 return a
             }
             let existing = Set(current.compactMap { $0["email"] as? String })
@@ -416,7 +417,7 @@ final class GoogleCalendarService {
     }
 
     /// Yes / No / Maybe on an invitation.
-    func respond(_ event: ExternalEvent, _ response: EventAttendee.Response) async throws {
+    func respond(_ event: ExternalEvent, _ response: EventAttendee.Response, note: String? = nil) async throws {
         let loc = try location(event)
         guard let raw = caches[loc.email]?.events[loc.calendarId]?[loc.eventId] else { throw ServiceError.notConnected }
         let attendees: [[String: Any]] = (raw.attendees ?? []).map { p in
@@ -424,6 +425,8 @@ final class GoogleCalendarService {
             if let email = p.email { a["email"] = email }
             a["responseStatus"] = p.isSelf == true ? response.rawValue : (p.responseStatus ?? "needsAction")
             if let optional = p.optional { a["optional"] = optional }
+            // Your note goes to the organizer with your reply; others' notes stay as they are.
+            if p.isSelf == true { if let note { a["comment"] = note } } else if let c = p.comment { a["comment"] = c }
             return a
         }
         let data = try await request(loc.email, "PATCH", "/calendars/\(Self.escape(loc.calendarId))/events/\(Self.escape(loc.eventId))",

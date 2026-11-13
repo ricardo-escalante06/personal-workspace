@@ -18,6 +18,8 @@ struct CalendarView: View {
     @State private var selection: Set<String> = []
     @State private var createRequest: CalendarCreateRequest?
     @State private var popoverItemId: String?
+    /// Tasks with a start date show as a bar up to their due date.
+    @AppStorage("showTaskSpans") private var showTaskSpans = true
     @FocusState private var focused: Bool
 
     private var tz: TimeZone { .current }
@@ -38,8 +40,16 @@ struct CalendarView: View {
         }
     }
 
-    private var range: (Date, Date) {
+    /// What the grid draws and loads: the visible days plus one more on each side, just
+    /// off screen, so sideways scrolling slides into real days instead of blank space.
+    private var gridDays: [LocalDate] {
+        guard model.calendarMode != .month else { return days }
         let d = days
+        return [d.first!.adding(days: -1)] + d + [d.last!.adding(days: 1)]
+    }
+
+    private var range: (Date, Date) {
+        let d = gridDays
         return (d.first!.startOfDay(in: tz), d.last!.adding(days: 1).startOfDay(in: tz))
     }
 
@@ -53,7 +63,9 @@ struct CalendarView: View {
             switch model.calendarMode {
             case .day, .week:
                 TimeGridView(
-                    days: days,
+                    days: gridDays,
+                    lead: 1,
+                    visibleCount: days.count,
                     items: items,
                     placed: placed,
                     selection: $selection,
@@ -89,9 +101,10 @@ struct CalendarView: View {
             }
         }
         #endif
-        .task(id: LoadKey(days: days, scope: model.calendarScope, revision: source.revision,
+        .task(id: LoadKey(days: gridDays, scope: model.calendarScope, revision: source.revision,
                           hidden: source.effectiveHiddenCalendarIds, access: source.access,
-                          overrides: model.eventOverrides, creates: Set(model.pendingEventCreates.keys))) {
+                          overrides: model.eventOverrides, creates: Set(model.pendingEventCreates.keys),
+                          spans: showTaskSpans)) {
             await load()
         }
         // While the calendar is open, ask macOS to pull Google/iCloud changes every minute.
@@ -188,6 +201,7 @@ struct CalendarView: View {
         var access: CalendarSource.Access
         var overrides: [String: AppModel.EventOverride]
         var creates: Set<String>
+        var spans: Bool
     }
 
     /// Loads events from EventKit for the range, then keeps task data live via GRDB.
@@ -196,8 +210,9 @@ struct CalendarView: View {
         let events = model.applyingOverrides(source.events(from: start, to: end))
         var options = CalendarQuery.Options()
         options.hiddenCalendars = source.effectiveHiddenCalendarIds
+        options.showSpans = showTaskSpans
         let scope = model.calendarScope
-        let visibleDays = days
+        let visibleDays = gridDays
         let observation = ValueObservation.tracking { db in
             try CalendarQuery.items(db, scope: scope, from: start, to: end, events: events, options: options)
         }
@@ -336,6 +351,8 @@ struct CalendarView: View {
             ForEach(model.containersInSidebarOrder.filter { $0.archivedAt == nil }) { c in
                 Button(String(repeating: "   ", count: max(0, c.depth - 1)) + c.name) { model.calendarScope = c.id }
             }
+            Divider()
+            Toggle("Show Task Spans", isOn: $showTaskSpans)
         } label: {
             HStack(spacing: 4) {
                 if let c = model.container(model.calendarScope) {
@@ -424,14 +441,14 @@ struct CalendarView: View {
     /// The edge line is the calendar's color (or the class/project it belongs to);
     /// the fill is the event's own color when it has one.
     private func style(for item: CalendarItem) -> BlockStyle {
-        let eventFill = item.event?.eventColor.map { Color(hex: $0).opacity(0.38) }
+        let eventFill = item.event?.eventColor.map { Color(hex: $0).opacity(0.26) }
         if let c = model.container(item.containerId) {
             let cc = ContainerColor(named: c.color)
             return BlockStyle(accent: cc.accent, fill: eventFill ?? cc.fill)
         }
         if let e = item.event {
             let calendar = Color(hex: source.color(forCalendar: e.calendarId, fallback: e.calendarColor))
-            return BlockStyle(accent: calendar, fill: eventFill ?? calendar.opacity(0.28))
+            return BlockStyle(accent: calendar, fill: eventFill ?? calendar.opacity(0.2))
         }
         return BlockStyle(accent: ContainerColor.grey.accent, fill: ContainerColor.grey.fill)
     }
@@ -493,6 +510,13 @@ struct CalendarView: View {
                     try model.store.editTask(taskId) { t in
                         t.dueDate = LocalDate(newStart)
                         if t.dueTime != nil { t.dueTime = LocalTime(hour: comps.hour ?? 0, minute: comps.minute ?? 0) }
+                    }
+                case .span(let taskId):
+                    // The whole span moves: start and due date together.
+                    let days = LocalDate(target.start).daysUntil(LocalDate(newStart))
+                    try model.store.editTask(taskId) { t in
+                        t.startDate = t.startDate?.adding(days: days)
+                        t.dueDate = t.dueDate?.adding(days: days)
                     }
                 case .event(let event):
                     eventMoves.append(.init(event: event, start: newStart, end: newEnd))

@@ -75,7 +75,9 @@ struct WorkspaceApp: App {
         }
         #endif
         #if os(macOS)
-        Window("Calendar", id: CalendarWindow.id) {
+        // A WindowGroup (not a single Window) so it's a normal window with full screen;
+        // tiling window managers like AeroSpace treat windows without it as dialogs.
+        WindowGroup("Calendar", id: CalendarWindow.id) {
             CalendarWindow()
                 .environment(model)
                 .preferredColorScheme(.dark)
