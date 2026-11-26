@@ -200,18 +200,21 @@ public struct ScheduleBlock: SyncRecord, Hashable {
     public var occurrenceKey: String?
     /// Set when the block is published to a calendar via EventKit (Milestone 2b).
     public var externalEventKey: String?
+    /// The session itself was done (checked off in Today). The task can stay open.
+    public var completedAt: Date?
     public var createdAt: Date
     public var updatedAt: Date
     public var deletedAt: Date?
 
     public init(
         id: UUID = UUID(), ownerId: UUID? = nil, taskId: UUID, startsAt: Date, endsAt: Date,
-        occurrenceKey: String? = nil, externalEventKey: String? = nil,
+        occurrenceKey: String? = nil, externalEventKey: String? = nil, completedAt: Date? = nil,
         createdAt: Date = Date(), updatedAt: Date = Date(), deletedAt: Date? = nil
     ) {
         self.id = id; self.ownerId = ownerId; self.taskId = taskId
         self.startsAt = startsAt; self.endsAt = endsAt
         self.occurrenceKey = occurrenceKey; self.externalEventKey = externalEventKey
+        self.completedAt = completedAt
         self.createdAt = createdAt; self.updatedAt = updatedAt; self.deletedAt = deletedAt
     }
 
@@ -223,6 +226,7 @@ public struct ScheduleBlock: SyncRecord, Hashable {
         case endsAt = "ends_at"
         case occurrenceKey = "occurrence_key"
         case externalEventKey = "external_event_key"
+        case completedAt = "completed_at"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case deletedAt = "deleted_at"

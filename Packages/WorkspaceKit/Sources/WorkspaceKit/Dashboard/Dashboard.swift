@@ -52,6 +52,12 @@ public struct TodayItem: Identifiable, Sendable, Equatable {
     public var isDueToday: Bool
     public var id: UUID { task.id }
 
+    /// Here only for a work session (not due today): its checkbox is the session's.
+    public var isSessionOnly: Bool { !isDueToday && !blocks.isEmpty }
+    public var sessionDone: Bool { !blocks.isEmpty && blocks.allSatisfy { $0.completedAt != nil } }
+    /// Checked in Today: the task is done, or (session-only) today's sessions are.
+    public var isChecked: Bool { task.status == .done || (isSessionOnly && sessionDone) }
+
     /// Earliest block start, or the due time, for ordering.
     public var sortTime: Date?
 }
@@ -96,7 +102,11 @@ public struct WeekChip: Identifiable, Sendable, Equatable {
         case .scheduled(let b): "block-\(b.id)"
         }
     }
-    public var isDone: Bool { task.status == .done }
+    public var isDone: Bool {
+        if task.status == .done { return true }
+        if case .scheduled(let b) = kind { return b.completedAt != nil }
+        return false
+    }
 }
 
 public enum Dashboard {
@@ -189,7 +199,7 @@ public enum Dashboard {
         }
         todayItems.sort { a, b in
             // Open before done; then timed (by time) before untimed; then title.
-            let ad = a.task.status == .done, bd = b.task.status == .done
+            let ad = a.isChecked, bd = b.isChecked
             if ad != bd { return !ad }
             switch (a.sortTime, b.sortTime) {
             case let (x?, y?) where x != y: return x < y
@@ -282,7 +292,7 @@ public enum Dashboard {
         // Metrics count unique tasks, never blocks.
         var m = Metrics()
         m.dueToday = liveTasks.filter { $0.dueDate == today && !$0.status.isClosed }.count
-        m.scheduledToday = Set(todayItems.filter { !$0.blocks.isEmpty && !$0.task.status.isClosed }.map(\.id)).count
+        m.scheduledToday = Set(todayItems.filter { !$0.blocks.isEmpty && !$0.isChecked && !$0.task.status.isClosed }.map(\.id)).count
         m.overdue = overdue.count
         m.next7Days = Set(upcoming.map { $0.task.occurrenceOf ?? $0.task.id }).count
         m.completedToday = liveTasks.filter { $0.completedAt.map { day(of: $0) == today } ?? false }.count

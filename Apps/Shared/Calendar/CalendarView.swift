@@ -26,7 +26,7 @@ struct CalendarView: View {
     private var source: CalendarSource { model.calendarSource }
 
     /// The visible days for the current mode. Week = 7 days starting at the anchor
-    /// (the anchor sits on a Sunday unless you scroll sideways).
+    /// (today by default, or a Sunday; see `AppModel.weekAnchor`).
     private var days: [LocalDate] {
         switch model.calendarMode {
         case .day:
@@ -127,8 +127,8 @@ struct CalendarView: View {
         .focused($focused)
         .onAppear {
             focused = true
-            if model.calendarMode == .week, CalendarMode.weekLength == 7, model.calendarAnchor == LocalDate(Date()) {
-                model.calendarAnchor = Dashboard.weekStart(containing: model.calendarAnchor)
+            if model.calendarMode == .week, model.calendarAnchor == LocalDate(Date()) {
+                model.calendarAnchor = model.weekAnchor(for: model.calendarAnchor)
             }
         }
         .onKeyPress(.leftArrow) { step(-1); return .handled }
@@ -418,12 +418,12 @@ struct CalendarView: View {
 
     private func setMode(_ mode: CalendarMode) {
         model.calendarMode = mode
-        if mode == .week, CalendarMode.weekLength == 7 { model.calendarAnchor = Dashboard.weekStart(containing: model.calendarAnchor) }
+        if mode == .week { model.calendarAnchor = model.weekAnchor(for: model.calendarAnchor) }
     }
 
     private func goToToday() {
         let today = LocalDate(Date())
-        model.calendarAnchor = model.calendarMode == .week && CalendarMode.weekLength == 7 ? Dashboard.weekStart(containing: today) : today
+        model.calendarAnchor = model.calendarMode == .week ? model.weekAnchor(for: today) : today
     }
 
     private func step(_ direction: Int) {

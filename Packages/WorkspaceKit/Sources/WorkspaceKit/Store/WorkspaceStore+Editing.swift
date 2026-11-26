@@ -130,6 +130,12 @@ extension WorkspaceStore {
         }
     }
 
+    public func setScheduleBlocksDone(_ ids: [UUID], _ done: Bool) throws {
+        for id in ids {
+            try update(ScheduleBlock.self, id) { $0.completedAt = done ? ($0.completedAt ?? Date()) : nil }
+        }
+    }
+
     public func deleteScheduleBlock(_ id: UUID) throws {
         try update(ScheduleBlock.self, id) { $0.deletedAt = Date() }
     }

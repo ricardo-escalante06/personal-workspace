@@ -54,7 +54,7 @@ public enum CalendarQuery {
             items.append(CalendarItem(
                 source: .block(taskId: t.id, blockId: b.id), title: t.title,
                 start: b.startsAt, end: b.endsAt, isAllDay: false, containerId: t.containerId,
-                isDone: t.status == .done, isTentative: false, isEditable: true, dueTime: nil, categoryId: t.categoryId
+                isDone: t.status == .done || b.completedAt != nil, isTentative: false, isEditable: true, dueTime: nil, categoryId: t.categoryId
             ))
         }
 

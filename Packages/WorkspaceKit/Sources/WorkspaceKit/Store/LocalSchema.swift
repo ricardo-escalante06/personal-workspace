@@ -190,6 +190,10 @@ enum LocalSchema {
         m.registerMigration("v4-milestone-color") { db in
             try db.alter(table: "tasks") { t in t.add(column: "color", .text) }
         }
+        // Work sessions can be checked off without completing the task.
+        m.registerMigration("v5-block-done") { db in
+            try db.alter(table: "task_schedule_blocks") { t in t.add(column: "completed_at", .datetime) }
+        }
         return m
     }
 }

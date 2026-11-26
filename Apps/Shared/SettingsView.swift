@@ -27,6 +27,7 @@ struct AccountsSettings: View {
 struct CalendarAccountsSections: View {
     @Environment(AppModel.self) private var model
     @AppStorage("guestEmails") private var guestEmails = AppModel.GuestEmails.ask.rawValue
+    @AppStorage("weekStartsToday") private var weekStartsToday = true
 
     var body: some View {
         let source = model.calendarSource
@@ -63,6 +64,12 @@ struct CalendarAccountsSections: View {
                 } else {
                     Text("Add GOOGLE_CLIENT_ID to Config/Secrets.xcconfig and rebuild to enable Google Calendar.")
                         .foregroundStyle(WSColor.textSecondary)
+                }
+            }
+            Section("Week view") {
+                Picker("Week starts on", selection: $weekStartsToday) {
+                    Text("Today").tag(true)
+                    Text("Sunday").tag(false)
                 }
             }
             Section {

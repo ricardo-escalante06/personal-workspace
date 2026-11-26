@@ -174,12 +174,12 @@ struct DashboardView: View {
     /// Today as a ruled notepad: it's the one list you work through, so it gets its own look.
     private var todayNotepad: some View {
         let dateText = today.startOfDay(in: .current).formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
-        let openCount = data.today.filter { $0.task.status != .done }.count
+        let openCount = data.today.filter { !$0.isChecked }.count
         return Notepad(title: "Today", subtitle: openCount > 0 ? "\(dateText) · \(openCount) left" : dateText) {
             ForEach(data.today) { item in
-                notepadRow(item.task,
-                           trailing: item.blocks.first.map { WSFormat.range($0.startsAt, $0.endsAt) }
-                               ?? (item.isDueToday ? (item.task.dueTime.map(WSFormat.time) ?? "due today") : nil))
+                notepadRow(item.task, trailing: WSFormat.todayDetail(item, today: today),
+                           urgent: item.isDueToday && !item.isChecked,
+                           isDone: item.isChecked, onToggle: { model.toggleToday(item) })
             }
             if !data.overdue.isEmpty {
                 HStack(spacing: 0) {
@@ -215,21 +215,22 @@ struct DashboardView: View {
         }
     }
 
-    private func notepadRow(_ task: TaskItem, trailing: String?, overdue: Bool = false) -> some View {
+    private func notepadRow(_ task: TaskItem, trailing: String?, overdue: Bool = false, urgent: Bool = false,
+                            isDone: Bool? = nil, onToggle: (() -> Void)? = nil) -> some View {
         let order = data.today.map(\.task.id) + data.overdue.map(\.id)
         let container = model.container(for: task)
         let subtitle: String? = (container?.id == scope) ? nil : (container?.name ?? "Inbox")
         return NotepadRow(
             title: task.title,
             subtitle: subtitle,
-            isDone: task.status == .done,
+            isDone: isDone ?? (task.status == .done),
             ink: ContainerColor(named: container?.color ?? "grey"),
             isSelected: model.isSelected(task.id),
-            onToggle: { model.toggleDone(task) }
+            onToggle: onToggle ?? { model.toggleDone(task) }
         ) {
             if let tag = model.tagStyle(task.categoryId) { TagPill(tag) }
             if let trailing {
-                Text(trailing).foregroundStyle(overdue ? WSColor.now : WSColor.textSecondary)
+                Text(trailing).foregroundStyle(overdue || urgent ? WSColor.now : WSColor.textSecondary)
             }
         }
         .taskInteractions(task, order: order)

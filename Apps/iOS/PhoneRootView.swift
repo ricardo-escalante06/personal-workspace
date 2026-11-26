@@ -132,6 +132,9 @@ struct PhoneTaskRow: View {
     var showLocation = true
     /// Off in Today, where "due today" is a given.
     var showDue = true
+    /// Today rows: checked state and checkbox action (a work session vs. the task).
+    var isChecked: Bool? = nil
+    var toggle: (() -> Void)? = nil
 
     var body: some View {
         let today = LocalDate(Date())
@@ -145,15 +148,16 @@ struct PhoneTaskRow: View {
                 isStarred: model.isStarred(task),
                 timeText: trailing,
                 dueText: trailing == nil && showDue ? WSFormat.due(task, today: today) : nil,
-                isOverdue: overdue || (task.dueDate.map { $0 < today } ?? false)
+                isOverdue: overdue || (task.dueDate.map { $0 < today } ?? false),
+                isChecked: isChecked
             ),
-            onToggle: { model.toggleDone(task) }
+            onToggle: toggle ?? { model.toggleDone(task) }
         )
         .contentShape(Rectangle())
         .onTapGesture { model.openDetails(task.id) }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            Button { model.toggleDone(task) } label: {
-                Label(task.status == .done ? "Not Done" : "Done", systemImage: "checkmark")
+            Button { (toggle ?? { model.toggleDone(task) })() } label: {
+                Label((isChecked ?? (task.status == .done)) ? "Not Done" : "Done", systemImage: "checkmark")
             }
             .tint(ContainerColor.green.accent)
         }
@@ -236,9 +240,11 @@ struct PhoneTodayView: View {
                 }
                 ForEach(data.today) { item in
                     PhoneTaskRow(task: item.task,
-                                 trailing: item.blocks.first.map { WSFormat.range($0.startsAt, $0.endsAt) }
-                                    ?? item.task.dueTime.map(WSFormat.time),
-                                 showDue: false)
+                                 trailing: WSFormat.todayDetail(item, today: today),
+                                 overdue: item.isDueToday && !item.isChecked,
+                                 showDue: false,
+                                 isChecked: item.isChecked,
+                                 toggle: { model.toggleToday(item) })
                 }
             } header: {
                 Text("Today · " + today.startOfDay(in: .current).formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))

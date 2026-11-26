@@ -65,7 +65,7 @@ struct TodayProvider: TimelineProvider {
             return .init(task: t, color: ContainerColor(named: c?.color ?? "grey").accent,
                          where_: c?.name ?? "Inbox", time: time, overdue: overdue)
         }
-        let todayRows = data.today.filter { $0.task.status != .done }.map { item in
+        let todayRows = data.today.filter { !$0.isChecked }.map { item in
             row(item.task, time: item.blocks.first.map { WSFormat.time($0.startsAt) } ?? item.task.dueTime.map(WSFormat.time))
         }
         let overdueRows = data.overdue.map { row($0, time: WSFormat.relativeDay($0.dueDate!, today: today), overdue: true) }
@@ -73,7 +73,7 @@ struct TodayProvider: TimelineProvider {
             (t.title, today.daysUntil(t.dueDate!), t.containerId.flatMap { containers[$0]?.name } ?? "Inbox")
         }
         // Next up: the next timed thing today, else the first open item.
-        let next = data.today.filter { $0.task.status != .done && ($0.sortTime ?? .distantPast) >= now }.first
+        let next = data.today.filter { !$0.isChecked && ($0.sortTime ?? .distantPast) >= now }.first
             .map { row($0.task, time: $0.sortTime.map { WSFormat.time($0) }) } ?? todayRows.first
         return TodayEntry(date: now, rows: todayRows + overdueRows, leftToday: todayRows.count,
                           overdueCount: overdueRows.count, starred: star, nextUp: next)

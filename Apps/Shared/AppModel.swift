@@ -87,7 +87,9 @@ final class AppModel {
     /// "Open in Calendar" from a dashboard: same week, same scope.
     func openCalendar(scope: UUID?, weekStart: LocalDate) {
         calendarScope = scope
-        calendarAnchor = weekStart
+        let today = LocalDate(Date())
+        let containsToday = (0..<7).contains(weekStart.daysUntil(today))
+        calendarAnchor = weekAnchor(for: containsToday ? today : weekStart)
         calendarMode = .week
         selection = .calendar
     }
@@ -634,6 +636,22 @@ final class AppModel {
         }
         if newStatus == .done {
             showToast(Toast(message: "Completed “\(task.title)”", undo: { [weak self] in
+                self?.undoManager?.undo()
+            }))
+        }
+    }
+
+    /// Today's checkbox: a row that's only here for a work session checks off the
+    /// session (the task stays open for its due day); anything due today completes the task.
+    func toggleToday(_ item: TodayItem) {
+        guard item.isSessionOnly, item.task.status != .done else { return toggleDone(item.task) }
+        let done = !item.sessionDone
+        let ids = item.blocks.map(\.id)
+        undoable(done ? "Finish Work Session" : "Reopen Work Session", [item.task.id]) {
+            try store.setScheduleBlocksDone(ids, done)
+        }
+        if done {
+            showToast(Toast(message: "Session done · “\(item.task.title)” stays open", undo: { [weak self] in
                 self?.undoManager?.undo()
             }))
         }
@@ -1340,6 +1358,13 @@ final class AppModel {
     // Week navigation
 
     /// ⌘[ / ⌘]: moves the calendar when it's showing, otherwise the dashboard week.
+    /// Week view's first column for a jump to `day`: the day itself when weeks start
+    /// on today (the default, so the days ahead stay readable), else its Sunday.
+    func weekAnchor(for day: LocalDate) -> LocalDate {
+        let startsToday = UserDefaults.standard.object(forKey: "weekStartsToday") as? Bool ?? true
+        return startsToday || CalendarMode.weekLength != 7 ? day : Dashboard.weekStart(containing: day)
+    }
+
     func shiftWeek(_ weeks: Int) {
         if selection == .calendar {
             stepCalendar(weeks)
@@ -1352,7 +1377,7 @@ final class AppModel {
     func goToThisWeek() {
         let today = LocalDate(Date())
         if selection == .calendar {
-            calendarAnchor = calendarMode == .week && CalendarMode.weekLength == 7 ? Dashboard.weekStart(containing: today) : today
+            calendarAnchor = calendarMode == .week ? weekAnchor(for: today) : today
         } else {
             weekStart = Dashboard.weekStart(containing: today)
         }

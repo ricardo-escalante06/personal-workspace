@@ -56,6 +56,10 @@ struct TimeGridView: View {
     /// How far the days have slid sideways under the fingers, in points.
     @State private var slide: CGFloat = 0
     @State private var settleTask: Task<Void, Never>?
+    #if os(iOS)
+    /// Finger travel already applied during a sideways swipe (nil: not swiping days).
+    @State private var swipeLast: CGFloat?
+    #endif
 
     private var shownCount: Int { visibleCount ?? days.count }
     private var columnWidth: CGFloat { areaWidth / CGFloat(max(shownCount, 1)) }
@@ -111,6 +115,8 @@ struct TimeGridView: View {
             .onHover { isHovering = $0 }
             #if os(macOS)
             .background(HorizontalScrollCatcher(isActive: isHovering) { dx in handleSideways(dx) })
+            #else
+            .simultaneousGesture(daySwipe)
             #endif
         }
         .task {
@@ -139,10 +145,39 @@ struct TimeGridView: View {
         }
     }
 
-    private func settle() {
+    #if os(iOS)
+    /// iPhone: swipe sideways to slide days, same feel as the Mac trackpad. Mostly
+    /// vertical drags are left to the scroll view; a flick carries on to the next day.
+    private var daySwipe: some Gesture {
+        DragGesture(minimumDistance: 12)
+            .onChanged { v in
+                guard drag == nil, lead > 0 else { return }
+                if swipeLast == nil {
+                    guard abs(v.translation.width) > abs(v.translation.height) * 1.4 else { return }
+                    swipeLast = v.translation.width
+                    settleTask?.cancel()
+                }
+                let w = columnWidth
+                guard w > 0 else { return }
+                slide += v.translation.width - (swipeLast ?? v.translation.width)
+                swipeLast = v.translation.width
+                while slide <= -w { onScrollDays(1); slide += w }
+                while slide >= w { onScrollDays(-1); slide -= w }
+            }
+            .onEnded { v in
+                guard swipeLast != nil else { return }
+                swipeLast = nil
+                settle(bias: v.predictedEndTranslation.width - v.translation.width)
+            }
+    }
+    #endif
+
+    /// `bias`: extra travel a flick would have carried (counts toward the next day).
+    private func settle(bias: CGFloat = 0) {
         let w = columnWidth
-        guard w > 0, slide != 0 else { return }
-        let direction = slide <= -w / 2 ? 1 : (slide >= w / 2 ? -1 : 0)
+        guard w > 0, slide != 0 || bias != 0 else { return }
+        let travel = slide + bias
+        let direction = travel <= -w / 2 ? 1 : (travel >= w / 2 ? -1 : 0)
         guard direction != 0 else {
             withAnimation(.smooth(duration: 0.2)) { slide = 0 }
             return

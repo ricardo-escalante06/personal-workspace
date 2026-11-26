@@ -167,7 +167,7 @@ public struct WeekStripView: View {
                     .onTapGesture(count: 2) { actions.openTask(chip.task.id) }
                     .simultaneousGesture(TapGesture().onEnded { actions.selectTask(chip.task.id) })
                     .contextMenu {
-                        Button(chip.isDone ? "Mark Not Done" : "Mark Done") { actions.toggleTask(chip.task) }
+                        Button(chip.task.status == .done ? "Mark Not Done" : "Mark Done") { actions.toggleTask(chip.task) }
                     }
                     .draggable(chip.id)
             }

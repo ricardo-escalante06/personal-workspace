@@ -50,6 +50,23 @@ public enum WSFormat {
         return "\(day) \(time(t))"
     }
 
+    /// Right side of a Today row, saying why it's there:
+    /// "2–4:30 PM · due Fri", "8–10 PM · due today", "due today · not scheduled".
+    public static func todayDetail(_ item: TodayItem, today: LocalDate) -> String {
+        var parts: [String] = []
+        if let b = item.blocks.first {
+            parts.append(range(b.startsAt, b.endsAt) + (item.blocks.count > 1 ? " +\(item.blocks.count - 1)" : ""))
+        }
+        if let due = item.task.dueDate {
+            let day = due == today ? "today" : relativeDay(due, today: today).lowercased()
+            parts.append("due \(day)" + (item.task.dueTime.map { " " + time($0) } ?? ""))
+        }
+        if item.isDueToday, item.blocks.isEmpty, item.task.dueTime == nil, !item.isChecked {
+            parts.append("not scheduled")
+        }
+        return parts.joined(separator: " · ")
+    }
+
     /// "November 2026"
     public static func monthYear(_ date: LocalDate) -> String {
         date.startOfDay(in: utc).formatted(Date.FormatStyle(timeZone: utc).month(.wide).year())

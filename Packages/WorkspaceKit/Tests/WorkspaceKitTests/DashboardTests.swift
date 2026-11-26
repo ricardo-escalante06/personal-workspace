@@ -116,3 +116,30 @@ private func dashboard(_ store: WorkspaceStore, _ scope: UUID?, now: Date = tues
         #expect(personal.today.contains { $0.task.id == h.groceries })   // due "today" (Tuesday)
     }
 }
+
+@Suite struct WorkSessionTests {
+    @Test func checkingOffASessionLeavesTheTaskOpen() throws {
+        let store = try WorkspaceStore.inMemory()
+        let tuesday = LocalDate(year: 2026, month: 11, day: 10)
+        let lab = try store.addTask(title: "Lab 4", containerId: nil, dueDate: tuesday.adding(days: 1))
+        let start = tuesday.startOfDay(in: la).addingTimeInterval(14 * 3600)
+        let block = try store.addScheduleBlock(taskId: lab.id, start: start, end: start.addingTimeInterval(9000))
+        func today() throws -> TodayItem {
+            let data = try store.db.read { try Dashboard.fetch($0, scope: nil, weekStart: weekStart, now: tuesdayNoon, timeZone: la) }
+            return try #require(data.today.first { $0.task.id == lab.id })
+        }
+
+        var item = try today()
+        #expect(item.isSessionOnly && !item.isChecked)
+
+        try store.setScheduleBlocksDone([block.id], true)
+        item = try today()
+        #expect(item.isChecked)
+        #expect(item.task.status != .done)   // still due tomorrow
+
+        // On its due day the same task's checkbox is the task's again.
+        try store.editTask(lab.id) { $0.dueDate = tuesday }
+        item = try today()
+        #expect(!item.isSessionOnly && !item.isChecked)
+    }
+}

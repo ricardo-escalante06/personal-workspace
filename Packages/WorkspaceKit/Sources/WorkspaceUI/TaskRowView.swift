@@ -47,12 +47,15 @@ public struct TaskRowView: View {
         public var timeText: String?
         public var dueText: String?
         public var isOverdue: Bool
+        /// Overrides the checked look (Today: a finished work session on an open task).
+        public var isChecked: Bool?
 
         public init(color: ContainerColor, subtitle: String? = nil, tag: TagStyle? = nil, isStarred: Bool = false,
                     subtasks: SubtaskProgress? = nil, timeText: String? = nil,
-                    dueText: String? = nil, isOverdue: Bool = false) {
+                    dueText: String? = nil, isOverdue: Bool = false, isChecked: Bool? = nil) {
             self.color = color; self.subtitle = subtitle; self.tag = tag; self.isStarred = isStarred
             self.subtasks = subtasks; self.timeText = timeText; self.dueText = dueText; self.isOverdue = isOverdue
+            self.isChecked = isChecked
         }
     }
 
@@ -69,7 +72,7 @@ public struct TaskRowView: View {
     }
 
     public var body: some View {
-        let done = task.status == .done
+        let done = context.isChecked ?? (task.status == .done)
         HStack(alignment: .firstTextBaseline, spacing: WSSpace.s + 2) {
             TaskCheckbox(isDone: done, color: context.color, action: onToggle)
                 .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
