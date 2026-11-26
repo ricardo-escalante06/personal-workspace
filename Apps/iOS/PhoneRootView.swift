@@ -255,21 +255,6 @@ struct PhoneTodayView: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
             }
-            if !data.overdue.isEmpty {
-                Section {
-                    if showOverdue {
-                        ForEach(data.overdue) { PhoneTaskRow(task: $0, overdue: true) }
-                    }
-                } header: {
-                    Button { withAnimation { showOverdue.toggle() } } label: {
-                        HStack {
-                            Text("Overdue (\(data.overdue.count))").foregroundStyle(WSColor.now)
-                            Image(systemName: "chevron.right").rotationEffect(.degrees(showOverdue ? 90 : 0))
-                                .font(.system(size: 10, weight: .semibold))
-                        }
-                    }
-                }
-            }
             ForEach(soon, id: \.key) { date, tasks in
                 Section(WSFormat.relativeDay(date, today: today)) {
                     ForEach(tasks) { PhoneTaskRow(task: $0, trailing: $0.dueTime.map(WSFormat.time)) }
@@ -318,11 +303,54 @@ extension PhoneTodayView {
                 .contextMenu { TaskContextMenu(task: item.task) }
                 .accessibilityHint(container?.name ?? "Inbox")
             }
+            if !data.overdue.isEmpty {
+                overdueHeader
+                if showOverdue {
+                    ForEach(data.overdue) { task in
+                        let container = model.container(for: task)
+                        NotepadRow(title: task.title, isDone: task.status == .done,
+                                   ink: ContainerColor(named: model.color(for: task)),
+                                   onToggle: { model.toggleDone(task) }) {
+                            if let due = WSFormat.due(task, today: today) {
+                                Text(due).foregroundStyle(WSColor.now).lineLimit(1)
+                            }
+                        }
+                        .onTapGesture { model.openDetails(task.id) }
+                        .contextMenu { TaskContextMenu(task: task) }
+                        .accessibilityHint(container?.name ?? "Inbox")
+                    }
+                }
+            }
             NotepadBlankLine(placeholder: data.today.isEmpty ? "Nothing yet — add something for today…" : "Add to today…") {
                 model.quickAdd = QuickAddRequest(presetDue: today)
             }
         }
         .padding(.horizontal, 2)
+    }
+
+    /// Collapsible "Overdue (n)" line inside the notepad, ruled like the rest.
+    var overdueHeader: some View {
+        HStack(spacing: 0) {
+            Color.clear.frame(width: NotepadMetrics.marginX)
+            Button {
+                withAnimation(.smooth(duration: 0.25)) { showOverdue.toggle() }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.right")
+                        .rotationEffect(.degrees(showOverdue ? 90 : 0))
+                        .imageScale(.small)
+                    Text("Overdue (\(data.overdue.count))")
+                }
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(WSColor.now)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, WSSpace.s + 2)
+            Spacer()
+        }
+        .frame(height: NotepadMetrics.lineHeight)
+        .overlay(alignment: .bottom) { Rectangle().fill(WSColor.paperRule).frame(height: 1) }
     }
 }
 
