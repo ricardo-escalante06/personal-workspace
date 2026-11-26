@@ -194,6 +194,18 @@ enum LocalSchema {
         m.registerMigration("v5-block-done") { db in
             try db.alter(table: "task_schedule_blocks") { t in t.add(column: "completed_at", .datetime) }
         }
+        // Hidden calendars, synced between devices.
+        m.registerMigration("v6-hidden-calendars") { db in
+            try db.create(table: "hidden_calendars") { t in
+                t.primaryKey("id", .blob)
+                t.column("owner_id", .blob)
+                t.column("kind", .text).notNull()
+                t.column("key", .text).notNull()
+                t.column("created_at", .datetime).notNull()
+                t.column("updated_at", .datetime).notNull()
+                t.column("deleted_at", .datetime)
+            }
+        }
         return m
     }
 }

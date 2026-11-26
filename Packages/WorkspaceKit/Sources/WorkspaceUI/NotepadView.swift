@@ -19,14 +19,18 @@ public enum NotepadMetrics {
 }
 
 /// The pad itself. Put `NotepadRow`s (and `NotepadBlankLine`s) inside.
-public struct Notepad<Content: View>: View {
+public struct Notepad<Content: View, Accessory: View>: View {
     let title: String
     let subtitle: String?
+    let accessory: Accessory
     let content: Content
 
-    public init(title: String, subtitle: String? = nil, @ViewBuilder content: () -> Content) {
+    /// `accessory` sits at the right of the header (e.g. a count of what's left).
+    public init(title: String, subtitle: String? = nil, @ViewBuilder accessory: () -> Accessory,
+                @ViewBuilder content: () -> Content) {
         self.title = title
         self.subtitle = subtitle
+        self.accessory = accessory()
         self.content = content()
     }
 
@@ -43,6 +47,7 @@ public struct Notepad<Content: View>: View {
                         .foregroundStyle(WSColor.textSecondary)
                 }
                 Spacer()
+                accessory
             }
             .padding(.leading, NotepadMetrics.marginX + WSSpace.s)
             .padding(.trailing, WSSpace.l)
@@ -65,6 +70,48 @@ public struct Notepad<Content: View>: View {
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(WSColor.paperEdge))
         .shadow(color: .black.opacity(0.22), radius: 6, y: 3)
+    }
+}
+
+extension Notepad where Accessory == EmptyView {
+    public init(title: String, subtitle: String? = nil, @ViewBuilder content: () -> Content) {
+        self.init(title: title, subtitle: subtitle, accessory: { EmptyView() }, content: content)
+    }
+}
+
+/// "2/5" with a ring that fills as the day's list gets done.
+public struct NotepadCounter: View {
+    let done: Int
+    let total: Int
+
+    public init(done: Int, total: Int) {
+        self.done = done
+        self.total = total
+    }
+
+    public var body: some View {
+        let fraction = total == 0 ? 0 : Double(done) / Double(total)
+        let finished = total > 0 && done == total
+        HStack(spacing: 6) {
+            ZStack {
+                Circle().stroke(WSColor.paperRule, lineWidth: 2.5)
+                Circle().trim(from: 0, to: fraction)
+                    .stroke(finished ? ContainerColor.green.accent : WSColor.action,
+                            style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                if finished {
+                    Image(systemName: "checkmark").font(.system(size: 8, weight: .heavy))
+                        .foregroundStyle(ContainerColor.green.accent)
+                }
+            }
+            .frame(width: 16, height: 16)
+            Text("\(done)/\(total)")
+                .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
+                .foregroundStyle(WSColor.textSecondary)
+        }
+        .animation(.smooth(duration: 0.3), value: done)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(done) of \(total) done")
     }
 }
 

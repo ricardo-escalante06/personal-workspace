@@ -192,6 +192,9 @@ extension AppModel {
     func watchCalendarForWidget() {
         withObservationTracking {
             _ = calendarSource.revision
+            // Hiding a calendar (here or on the Mac) updates the widget too.
+            _ = calendarSource.hiddenCalendarIds
+            _ = calendarSource.hiddenAccounts
         } onChange: { [weak self] in
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(1))

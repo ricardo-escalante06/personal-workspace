@@ -73,12 +73,17 @@ struct QuickScheduleView: View {
         .padding(.top, WSSpace.s)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .presentationDetents([.medium, .large])
-        .task { try? await Task.sleep(for: .milliseconds(350)); focused = true }
+        .presentationDragIndicator(.visible)
+        // Bring the keyboard up only once the sheet has finished sliding in; raising it
+        // mid-animation made the sheet jump.
+        .task { try? await Task.sleep(for: .milliseconds(500)); focused = true }
         #else
         .frame(width: 380)
         #endif
         .onAppear {
+            #if os(macOS)
             focused = true
+            #endif
             calendarId = model.calendarSource.defaultCalendarId
         }
         .task { await loadTasks() }

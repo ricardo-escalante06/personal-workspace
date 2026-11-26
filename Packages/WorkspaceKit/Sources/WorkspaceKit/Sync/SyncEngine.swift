@@ -71,6 +71,7 @@ public struct SyncTable: Sendable {
         .of(OccurrenceOverride.self),
         .of(EventMappingRule.self),
         .of(EventLink.self),
+        .of(HiddenCalendar.self),
     ]
 }
 

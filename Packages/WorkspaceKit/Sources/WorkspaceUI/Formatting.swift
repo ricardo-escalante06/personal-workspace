@@ -52,7 +52,15 @@ public enum WSFormat {
 
     /// Right side of a Today row, saying why it's there:
     /// "2–4:30 PM · due Fri", "8–10 PM · due today", "due today · not scheduled".
-    public static func todayDetail(_ item: TodayItem, today: LocalDate) -> String {
+    /// `compact` (iPhone): "2–4:30 PM · Fri", "8–10 PM", "due 11:59 PM", "due today".
+    public static func todayDetail(_ item: TodayItem, today: LocalDate, compact: Bool = false) -> String {
+        if compact {
+            let due = item.task.dueDate.map { $0 == today ? nil : relativeDay($0, today: today) } ?? nil
+            if let b = item.blocks.first {
+                return range(b.startsAt, b.endsAt) + (due.map { " · \($0)" } ?? "")
+            }
+            return "due " + (item.task.dueTime.map { time($0) } ?? (due ?? "today"))
+        }
         var parts: [String] = []
         if let b = item.blocks.first {
             parts.append(range(b.startsAt, b.endsAt) + (item.blocks.count > 1 ? " +\(item.blocks.count - 1)" : ""))

@@ -113,6 +113,10 @@ struct TimeGridView: View {
                 }
             }
             .onHover { isHovering = $0 }
+            #if os(iOS)
+            // A held block is being moved or resized: the page stays put under it.
+            .scrollDisabled(drag != nil)
+            #endif
             #if os(macOS)
             .background(HorizontalScrollCatcher(isActive: isHovering) { dx in handleSideways(dx) })
             #else
@@ -213,6 +217,22 @@ struct TimeGridView: View {
                 .frame(width: Self.gutter)
             slidingColumns { day in
                 let isToday = day == today
+                Group {
+                #if os(iOS)
+                // iPhone: weekday over a big date, Apple Calendar style. Today is red and
+                // bold with a filled circle; days already past are dimmer.
+                VStack(spacing: 2) {
+                    Text(WSFormat.weekdayShort(day).uppercased())
+                        .font(.system(size: 11, weight: isToday ? .bold : .medium))
+                        .foregroundStyle(isToday ? WSColor.now : (day < today ? WSColor.textTertiary : WSColor.textSecondary))
+                    Text("\(day.day)")
+                        .font(.system(size: 19, weight: isToday ? .bold : .medium).monospacedDigit())
+                        .foregroundStyle(isToday ? Color.white : (day < today ? WSColor.textTertiary : WSColor.textPrimary))
+                        .frame(width: 34, height: 34)
+                        .background(Circle().fill(isToday ? WSColor.now : .clear))
+                }
+                .frame(maxWidth: .infinity)
+                #else
                 HStack(spacing: 5) {
                     Text(WSFormat.weekdayShort(day))
                         .foregroundStyle(isToday ? WSColor.textPrimary : WSColor.textSecondary)
@@ -225,6 +245,8 @@ struct TimeGridView: View {
                 }
                 .font(.system(size: 13))
                 .frame(maxWidth: .infinity)
+                #endif
+                }
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) {
                     model.calendarAnchor = day
@@ -430,7 +452,7 @@ struct TimeGridView: View {
             GridBackground(dayCount: days.count, weekendOrToday: days.map { isWeekend($0) || $0 == today })
                 .frame(width: width, height: Self.hourHeight * 24)
                 .contentShape(Rectangle())
-                .gesture(createGesture(columnWidth: columnWidth))
+                .gridGesture(createGesture(columnWidth: columnWidth))
                 #if os(macOS)
                 .onContinuousHover(coordinateSpace: .named("grid")) { phase in
                     switch phase {
@@ -535,10 +557,11 @@ struct TimeGridView: View {
             compact: height < 34
         )
         .frame(width: max(subWidth - 2, 10), height: max(height + extra, 16))
+        // Resize by the bottom edge (Mac only: on iPhone a hold always moves the block).
         .overlay(alignment: .bottom) {
-            if p.item.isEditable && !p.item.isDeadline {
+            if p.item.isEditable && !p.item.isDeadline && Platform.deviceName != "iPhone" {
                 Color.clear
-                    .frame(height: Platform.deviceName == "iPhone" ? 14 : 6)
+                    .frame(height: 6)
                     .contentShape(Rectangle())
                     .gesture(resizeGesture(p))
                     #if os(macOS)
@@ -558,9 +581,25 @@ struct TimeGridView: View {
         .offset(x: CGFloat(dayIndex) * columnWidth + 2 + CGFloat(p.column) * subWidth + dx, y: top + 1 + dy)
         .zIndex(moving || resizing ? 10 : 1)
         .shadow(color: moving ? .black.opacity(0.35) : .clear, radius: 8, y: 4)
+        #if os(iOS)
+        // One tap opens it; a double-tap recognizer here would hold the touch and stop scrolling.
+        .simultaneousGesture(TapGesture().onEnded { onOpen(p.item) })
+        #else
         .onTapGesture(count: 2) { onOpen(p.item) }
         .simultaneousGesture(TapGesture().onEnded { onClick(p.item, Self.additiveClick) })
+        #endif
+        #if os(iOS)
+        // Hold a block, then drag it. A swipe that starts on it scrolls the page.
+        .gesture(HoldDrag(isEnabled: p.item.isEditable, onChange: { t in
+            let group: Set<String> = selection.contains(p.item.id) ? selection : [p.item.id]
+            drag = DragPreview(itemId: p.item.id, dx: t.width, dy: t.height, resizeOnly: false, group: group)
+        }, onEnd: { t in
+            guard let t else { drag = nil; return }
+            finishMove(p, translation: t, columnWidth: columnWidth)
+        }))
+        #else
         .gesture(p.item.isEditable ? moveGesture(p, columnWidth: columnWidth) : nil)
+        #endif
     }
 
     /// ⇧ or ⌘ held during a click.
@@ -583,22 +622,6 @@ struct TimeGridView: View {
     }
 
     private func moveGesture(_ p: PlacedItem, columnWidth: CGFloat) -> some Gesture {
-        #if os(iOS)
-        // On a touch screen a plain drag scrolls; press and hold a block, then drag it.
-        LongPressGesture(minimumDuration: 0.3)
-            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named("grid")))
-            .onChanged { value in
-                guard case .second(true, let v) = value else { return }
-                if drag == nil { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
-                let group: Set<String> = selection.contains(p.item.id) ? selection : [p.item.id]
-                drag = DragPreview(itemId: p.item.id, dx: v?.translation.width ?? 0, dy: v?.translation.height ?? 0,
-                                   resizeOnly: false, group: group)
-            }
-            .onEnded { value in
-                guard case .second(true, let v?) = value else { drag = nil; return }
-                finishMove(p, translation: v.translation, columnWidth: columnWidth)
-            }
-        #else
         DragGesture(minimumDistance: 4, coordinateSpace: .named("grid"))
             .onChanged { v in
                 let group: Set<String> = selection.contains(p.item.id) ? selection : [p.item.id]
@@ -606,7 +629,6 @@ struct TimeGridView: View {
                                    resizeOnly: false, group: group)
             }
             .onEnded { v in finishMove(p, translation: v.translation, columnWidth: columnWidth) }
-        #endif
     }
 
     private func finishMove(_ p: PlacedItem, translation: CGSize, columnWidth: CGFloat) {
@@ -934,6 +956,68 @@ struct CalendarItemPopover: View {
     private func copy() {
         guard !item.isDeadline else { return }
         model.calendarClipboard = [item]
+    }
+}
+#endif
+
+private extension View {
+    /// Grid gestures: on iPhone they run alongside the scroll view (they only take over
+    /// after a press and hold), so a swipe that starts on a block still scrolls.
+    @ViewBuilder
+    func gridGesture<G: Gesture>(_ gesture: G?) -> some View {
+        #if os(iOS)
+        simultaneousGesture(gesture)
+        #else
+        self.gesture(gesture)
+        #endif
+    }
+}
+
+#if os(iOS)
+/// Press and hold, then drag: UIKit's long press, which lets the scroll view have any
+/// touch that moves before the hold completes. (SwiftUI's sequenced long-press + drag
+/// keeps the touch and stops a swipe that starts on a block from scrolling.)
+private struct HoldDrag: UIGestureRecognizerRepresentable {
+    var isEnabled = true
+    var minimumDuration: TimeInterval = 0.3
+    /// Finger travel since the hold began.
+    var onChange: (CGSize) -> Void
+    /// Final travel, or nil if the system cancelled the gesture.
+    var onEnd: (CGSize?) -> Void
+
+    final class Coordinator { var start: CGPoint = .zero }
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+
+    func makeUIGestureRecognizer(context: Context) -> UILongPressGestureRecognizer {
+        let g = UILongPressGestureRecognizer()
+        g.minimumPressDuration = minimumDuration
+        return g
+    }
+
+    func updateUIGestureRecognizer(_ recognizer: UILongPressGestureRecognizer, context: Context) {
+        recognizer.isEnabled = isEnabled
+        recognizer.minimumPressDuration = minimumDuration
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UILongPressGestureRecognizer, context: Context) {
+        let point = recognizer.location(in: recognizer.view?.window)
+        let c = context.coordinator
+        let travel = CGSize(width: point.x - c.start.x, height: point.y - c.start.y)
+        switch recognizer.state {
+        case .began:
+            c.start = point
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            onChange(.zero)
+        case .changed:
+            onChange(travel)
+        case .ended:
+            onEnd(travel)
+        case .cancelled, .failed:
+            onEnd(nil)
+        default:
+            break
+        }
     }
 }
 #endif

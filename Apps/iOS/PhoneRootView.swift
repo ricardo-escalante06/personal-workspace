@@ -18,6 +18,7 @@ struct PhoneRootView: View {
             Tab("Today", systemImage: "sun.max", value: .today) {
                 NavigationStack { PhoneTodayView() }
             }
+            .badge(model.todayLeft)
             Tab("Calendar", systemImage: "calendar", value: .calendar) {
                 NavigationStack { CalendarView().toolbar(.hidden, for: .navigationBar) }
             }
@@ -48,9 +49,24 @@ struct PhoneRootView: View {
                     }
                 }
             }
-            .presentationDetents([.large])
+            // A drawer from the bottom (about two-thirds tall) you can pull up for more.
+            .presentationDetents([.fraction(0.68), .large])
+            .presentationDragIndicator(.visible)
+            .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.68)))
         }
         .sheet(isPresented: $model.showTagManager) { NavigationStack { TagManagerView() } }
+        .sheet(isPresented: $model.showCalendarPicker) {
+            NavigationStack {
+                PhoneCalendarsView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { model.showCalendarPicker = false }
+                        }
+                    }
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
         .sheet(item: $model.seriesEditor) { request in AssignmentSeriesSheet(request: request) }
         .overlay(alignment: .bottom) {
             if let toast = model.toast {
@@ -234,20 +250,10 @@ struct PhoneTodayView: View {
                 }
             }
             Section {
-                if data.today.isEmpty {
-                    Text("Nothing due or planned today.").foregroundStyle(WSColor.textTertiary)
-                        .listRowBackground(WSColor.canvas)
-                }
-                ForEach(data.today) { item in
-                    PhoneTaskRow(task: item.task,
-                                 trailing: WSFormat.todayDetail(item, today: today),
-                                 overdue: item.isDueToday && !item.isChecked,
-                                 showDue: false,
-                                 isChecked: item.isChecked,
-                                 toggle: { model.toggleToday(item) })
-                }
-            } header: {
-                Text("Today · " + today.startOfDay(in: .current).formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
+                todayNotepad
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 8, trailing: 0))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
             }
             if !data.overdue.isEmpty {
                 Section {
@@ -278,6 +284,7 @@ struct PhoneTodayView: View {
             ToolbarItem(placement: .topBarLeading) { PhoneSyncBadge() }
         }
         .overlay(alignment: .bottomTrailing) { QuickAddButton(due: today) }
+        .onChange(of: data.today.filter { !$0.isChecked }.count, initial: true) { _, left in model.todayLeft = left }
         .refreshable { await model.syncNow() }
         .task(id: today) {
             let weekStart = Dashboard.weekStart(containing: today)
@@ -286,6 +293,36 @@ struct PhoneTodayView: View {
             }
             do { for try await value in observation.values(in: model.store.db) { data = value } } catch {}
         }
+    }
+}
+
+extension PhoneTodayView {
+    /// Today as the same ruled notepad as the Mac: tap a line for details, the box
+    /// checks it off (a work session, or the task when it's due today).
+    var todayNotepad: some View {
+        let dateText = today.startOfDay(in: .current).formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
+        let done = data.today.filter(\.isChecked).count
+        return Notepad(title: "Today", subtitle: dateText) {
+            if !data.today.isEmpty { NotepadCounter(done: done, total: data.today.count) }
+        } content: {
+            ForEach(data.today) { item in
+                let container = model.container(for: item.task)
+                let ink = ContainerColor(named: model.color(for: item.task))
+                NotepadRow(title: item.task.title, isDone: item.isChecked, ink: ink,
+                           onToggle: { model.toggleToday(item) }) {
+                    Text(WSFormat.todayDetail(item, today: today, compact: true))
+                        .foregroundStyle(item.isDueToday && !item.isChecked ? WSColor.now : WSColor.textSecondary)
+                        .lineLimit(1)
+                }
+                .onTapGesture { model.openDetails(item.task.id) }
+                .contextMenu { TaskContextMenu(task: item.task) }
+                .accessibilityHint(container?.name ?? "Inbox")
+            }
+            NotepadBlankLine(placeholder: data.today.isEmpty ? "Nothing yet — add something for today…" : "Add to today…") {
+                model.quickAdd = QuickAddRequest(presetDue: today)
+            }
+        }
+        .padding(.horizontal, 2)
     }
 }
 
@@ -599,6 +636,9 @@ struct PhoneSettingsView: View {
                 }
             }
             NotificationSettingsSection()
+            Section("Calendars") {
+                NavigationLink("Show or Hide Calendars") { PhoneCalendarsView() }
+            }
             Section("Tags") {
                 Button("Manage Tags…") { model.showTagManager = true }
             }
@@ -649,3 +689,57 @@ private struct PhoneEventDialogs: ViewModifier {
             }
     }
 }
+
+/// Every calendar with a switch, grouped by account. Hidden calendars sync to the Mac
+/// (and back), and the widgets follow them.
+struct PhoneCalendarsView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let source = model.calendarSource
+        let googleAccounts = source.google?.accounts.map(\.email) ?? []
+        let groups = Dictionary(grouping: source.calendars, by: \.account).sorted { a, b in
+            let ia = googleAccounts.firstIndex(of: a.key) ?? Int.max, ib = googleAccounts.firstIndex(of: b.key) ?? Int.max
+            return ia != ib ? ia < ib : a.key < b.key
+        }
+        List {
+            if groups.isEmpty {
+                Text("No calendars yet. Connect Google or allow calendar access in Settings.")
+                    .foregroundStyle(WSColor.textTertiary)
+            }
+            ForEach(groups, id: \.key) { account, calendars in
+                let accountHidden = source.hiddenAccounts.contains(account)
+                Section {
+                    Toggle(isOn: Binding(
+                        get: { !source.hiddenAccounts.contains(account) },
+                        set: { show in
+                            if show { source.hiddenAccounts.remove(account) } else { source.hiddenAccounts.insert(account) }
+                        }
+                    )) {
+                        Text("Show this account").font(.system(size: 14, weight: .medium))
+                    }
+                    ForEach(calendars.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }) { cal in
+                        Toggle(isOn: Binding(
+                            get: { !source.hiddenCalendarIds.contains(cal.id) },
+                            set: { show in
+                                if show { source.hiddenCalendarIds.remove(cal.id) } else { source.hiddenCalendarIds.insert(cal.id) }
+                            }
+                        )) {
+                            HStack(spacing: 10) {
+                                Circle().fill(Color(hex: source.color(forCalendar: cal.id, fallback: cal.color))).frame(width: 10, height: 10)
+                                Text(cal.title).lineLimit(1)
+                            }
+                        }
+                        .disabled(accountHidden)
+                        .opacity(accountHidden ? 0.5 : 1)
+                    }
+                } header: {
+                    Text(account)
+                }
+            }
+        }
+        .navigationTitle("Calendars")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+

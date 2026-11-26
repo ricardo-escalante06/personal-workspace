@@ -127,6 +127,10 @@ final class AppModel {
     enum WindowKind { case main, calendar }
     var activeWindow: WindowKind = .main
     var showMainInspector = false
+    /// iPhone: the calendar list with show/hide switches.
+    var showCalendarPicker = false
+    /// What's left in Today (iPhone tab badge).
+    var todayLeft = 0
     /// Main window's left sidebar (⌘I).
     var sidebarVisibility: NavigationSplitViewVisibility = .all
 
@@ -227,6 +231,8 @@ final class AppModel {
             }
         }
 
+        syncHiddenCalendars()
+
         let outboxObservation = ValueObservation.tracking { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sync_outbox") ?? 0
         }
@@ -236,6 +242,39 @@ final class AppModel {
                 self?.pendingChanges = count
                 // Local edits queue rows in the outbox; upload them shortly after.
                 if count > 0 { await self?.scheduler?.request(.localChange) }
+            }
+        }
+    }
+
+    private struct HiddenSets: Equatable {
+        var calendars: Set<String>
+        var accounts: Set<String>
+        var everSaved: Bool
+    }
+
+    /// Hidden calendars live in the synced store, so hiding one on the Mac hides it on
+    /// the iPhone. The first time, this device's existing choices seed the store.
+    private func syncHiddenCalendars() {
+        let source = calendarSource
+        if (try? store.hasHiddenCalendarHistory()) == false,
+           !source.hiddenCalendarIds.isEmpty || !source.hiddenAccounts.isEmpty {
+            try? store.setHiddenCalendars(calendars: source.hiddenCalendarIds, accounts: source.hiddenAccounts)
+        }
+        source.onHiddenChange = { [weak self, weak source] in
+            guard let self, let source else { return }
+            try? self.store.setHiddenCalendars(calendars: source.hiddenCalendarIds, accounts: source.hiddenAccounts)
+        }
+        let observation = ValueObservation.tracking { (db: Database) -> HiddenSets in
+            let sets = try WorkspaceStore.hiddenCalendars(db)
+            let everSaved = try HiddenCalendar.fetchCount(db) > 0
+            return HiddenSets(calendars: sets.calendars, accounts: sets.accounts, everSaved: everSaved)
+        }
+        Task { [weak self] in
+            guard let db = self?.store.db else { return }
+            for try await hidden in observation.values(in: db) {
+                // Before any device has saved a choice, keep this device's own.
+                guard hidden.everSaved else { continue }
+                self?.calendarSource.applySyncedHidden(calendars: hidden.calendars, accounts: hidden.accounts)
             }
         }
     }

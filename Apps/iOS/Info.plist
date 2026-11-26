@@ -33,6 +33,8 @@
 	<string>1</string>
 	<key>GoogleClientID</key>
 	<string>$(GOOGLE_CLIENT_ID)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Workspace shows your calendar events (including Google Calendar) next to your tasks, and lets you move events you can edit.</string>
 	<key>NSCalendarsUsageDescription</key>

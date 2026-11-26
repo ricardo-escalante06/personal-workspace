@@ -353,6 +353,9 @@ struct CalendarView: View {
             }
             Divider()
             Toggle("Show Task Spans", isOn: $showTaskSpans)
+            #if os(iOS)
+            Button("Show or Hide Calendars…") { model.showCalendarPicker = true }
+            #endif
         } label: {
             HStack(spacing: 4) {
                 if let c = model.container(model.calendarScope) {

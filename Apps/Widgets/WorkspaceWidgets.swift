@@ -31,8 +31,11 @@ struct TodayEntry: TimelineEntry {
     /// The nearest starred thing (exam…) in the next two weeks.
     var starred: (title: String, days: Int, where_: String)?
     var nextUp: Row?
+    /// The small widget's ring.
+    var progress = TodayProgress(done: 0, total: 0)
 
-    static let placeholder = TodayEntry(date: Date(), rows: [], leftToday: 0, overdueCount: 0, starred: nil, nextUp: nil)
+    static let placeholder = TodayEntry(date: Date(), rows: [], leftToday: 0, overdueCount: 0, starred: nil, nextUp: nil,
+                                        progress: .sample)
 }
 
 struct TodayProvider: TimelineProvider {
@@ -76,7 +79,7 @@ struct TodayProvider: TimelineProvider {
         let next = data.today.filter { !$0.isChecked && ($0.sortTime ?? .distantPast) >= now }.first
             .map { row($0.task, time: $0.sortTime.map { WSFormat.time($0) }) } ?? todayRows.first
         return TodayEntry(date: now, rows: todayRows + overdueRows, leftToday: todayRows.count,
-                          overdueCount: overdueRows.count, starred: star, nextUp: next)
+                          overdueCount: overdueRows.count, starred: star, nextUp: next, progress: TodayProgress(data))
     }
 }
 
@@ -89,7 +92,7 @@ struct TodayWidget: Widget {
                 .containerBackground(Color(hex: 0x191919), for: .widget)
         }
         .configurationDisplayName("Today")
-        .description("What's due and planned today. Tap a circle to check it off.")
+        .description("Small: how much of today is left. Larger: your Today list; tap a box to check it off.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
@@ -120,6 +123,15 @@ struct TodayWidgetView: View {
     }
 
     var body: some View {
+        if family == .systemSmall {
+            TodayRingView(progress: entry.progress)
+                .widgetURL(URL(string: "workspace://today"))
+        } else {
+            notepad
+        }
+    }
+
+    private var notepad: some View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("Today").font(.system(size: 13, weight: .semibold, design: .rounded))
@@ -280,13 +292,7 @@ struct CalendarWidgetView: View {
             let limit = family == .systemLarge ? 9 : 3
             let today = upcoming.filter { Calendar.current.isDate($0.start, inSameDayAs: entry.date) || $0.start < entry.date }
             let later = upcoming.filter { !today.contains($0) }
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text(entry.date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
-                        .font(.system(size: 13, weight: .bold))
-                    Spacer()
-                    Image(systemName: "calendar").foregroundStyle(Color(hex: 0x9B9B9B))
-                }
+            let list = VStack(alignment: .leading, spacing: 5) {
                 if today.isEmpty {
                     Text("Nothing else today").font(.system(size: 12)).foregroundStyle(Color(hex: 0x9B9B9B))
                 }
@@ -297,6 +303,44 @@ struct CalendarWidgetView: View {
                     ForEach(later.prefix(limit - today.count)) { row($0) }
                 }
                 Spacer(minLength: 0)
+            }
+            Group {
+                if family == .systemMedium {
+                    // Apple's layout: the date in a column on the left leaves room for
+                    // three events on the right.
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(entry.date.formatted(.dateTime.weekday(.wide)).uppercased())
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(WSColor.now)
+                            Text(entry.date.formatted(.dateTime.day()))
+                                .font(.system(size: 38, weight: .semibold, design: .rounded).monospacedDigit())
+                            Spacer(minLength: 0)
+                            Text(entry.date.formatted(.dateTime.month(.wide)))
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color(hex: 0x9B9B9B))
+                        }
+                        .frame(width: 74, alignment: .leading)
+                        list
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 5) {
+                        // Red weekday over a bold date, like Apple's Calendar widget.
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(entry.date.formatted(.dateTime.weekday(.wide)).uppercased())
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(WSColor.now)
+                                Text(entry.date.formatted(.dateTime.month(.wide).day()))
+                                    .font(.system(size: 17, weight: .bold))
+                            }
+                            Spacer()
+                            Image(systemName: "calendar").foregroundStyle(Color(hex: 0x9B9B9B))
+                        }
+                        .padding(.bottom, 2)
+                        list
+                    }
+                }
             }
             .foregroundStyle(Color(hex: 0xEDEDED))
             .widgetURL(URL(string: "workspace://calendar"))

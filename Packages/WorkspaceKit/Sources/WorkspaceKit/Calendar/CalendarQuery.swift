@@ -82,9 +82,12 @@ public enum CalendarQuery {
             for t in tasks {
                 guard let due = t.dueDate, due >= first, due <= last else { continue }
                 if t.dueTime != nil, let instant = t.dueInstant(in: timeZone) {
+                    // A late deadline (11:59 PM) stops at midnight instead of spilling
+                    // into the next day's column.
+                    let dayEnd = due.adding(days: 1).startOfDay(in: timeZone)
                     items.append(CalendarItem(
                         source: .deadline(taskId: t.id), title: t.title,
-                        start: instant, end: instant.addingTimeInterval(options.timedDeadlineLength),
+                        start: instant, end: min(instant.addingTimeInterval(options.timedDeadlineLength), dayEnd),
                         isAllDay: false, containerId: t.containerId, isDone: t.status == .done,
                         isTentative: false, isEditable: true, dueTime: t.dueTime, categoryId: t.categoryId
                     ))

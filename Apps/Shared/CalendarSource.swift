@@ -36,13 +36,31 @@ final class CalendarSource {
     /// Bumped whenever any calendar data changes, so views refetch.
     private(set) var revision = 0
 
-    /// Calendars the user switched off (per device).
+    /// Calendars the user switched off. Synced between devices (see `AppModel.syncHiddenCalendars`);
+    /// the UserDefaults copy is only a cache for launch and the widgets.
     var hiddenCalendarIds: Set<String> {
-        didSet { UserDefaults.standard.set(Array(hiddenCalendarIds), forKey: "hiddenCalendarIds") }
+        didSet {
+            UserDefaults.standard.set(Array(hiddenCalendarIds), forKey: "hiddenCalendarIds")
+            if !applyingSyncedHidden { onHiddenChange?() }
+        }
     }
     /// Whole accounts switched off (Google email or system source title like "iCloud").
     var hiddenAccounts: Set<String> {
-        didSet { UserDefaults.standard.set(Array(hiddenAccounts), forKey: "hiddenCalendarAccounts") }
+        didSet {
+            UserDefaults.standard.set(Array(hiddenAccounts), forKey: "hiddenCalendarAccounts")
+            if !applyingSyncedHidden { onHiddenChange?() }
+        }
+    }
+    /// Called when the user hides or shows a calendar here, to save it for the other devices.
+    @ObservationIgnored var onHiddenChange: (() -> Void)?
+    @ObservationIgnored private var applyingSyncedHidden = false
+
+    /// Hidden sets that arrived from another device (no echo back to the store).
+    func applySyncedHidden(calendars: Set<String>, accounts: Set<String>) {
+        applyingSyncedHidden = true
+        defer { applyingSyncedHidden = false }
+        if hiddenCalendarIds != calendars { hiddenCalendarIds = calendars }
+        if hiddenAccounts != accounts { hiddenAccounts = accounts }
     }
 
     /// Calendars hidden directly or because their whole account is hidden.
